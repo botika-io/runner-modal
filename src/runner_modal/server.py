@@ -11,10 +11,10 @@ import uvicorn
 
 # Modal identifies Servers by the class ``__name__`` (no parameters allowed).
 # One ``Runner.create`` per App — the runner name is passed via ``RUNNER_MODAL_NAME``.
-SERVER_CLASS_NAME = "GitHubServer"
+SERVER_CLASS_NAME = "RunnerServer"
 
 
-class GitHubServer:
+class RunnerServer:
     """HTTP control plane started via ``@app.server``."""
 
     @modal.enter()

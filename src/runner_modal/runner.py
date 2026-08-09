@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
 from runner_modal.profile import StageClock
-from runner_modal.server import SERVER_CLASS_NAME, GitHubServer
+from runner_modal.server import SERVER_CLASS_NAME, RunnerServer
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 META_KEY = "runner"
@@ -536,7 +536,7 @@ class Runner:
         """Register control plane on ``app`` (definition-time — not a Sandbox).
 
         Call once per App. Runner ``name`` identifies Dict/Volume state; the Modal
-        Server class is always ``GitHubServer`` (Modal has no Server parameters).
+        Server class is always ``RunnerServer`` (Modal has no Server parameters).
 
         ``secret`` must be a named Secret (``Secret.from_name``) with
         ``GITHUB_TOKEN`` and ``WEBHOOK_SECRET``. The name is persisted so the
@@ -662,7 +662,7 @@ class Runner:
             port=port,
             ephemeral_disk=ephemeral_disk,
             proxy=proxy,
-        )(GitHubServer)
+        )(RunnerServer)
         return runner
 
     @classmethod

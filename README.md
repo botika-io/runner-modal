@@ -84,7 +84,7 @@ Include every pool label plus a unique pin so one runner maps to one job.
 ## How it works
 
 ```text
-GitHub  --workflow_job-->  GitHubServer
+GitHub  --workflow_job-->  RunnerServer
                               │
                        claim delivery ID
                               │
@@ -101,7 +101,7 @@ GitHub  --workflow_job-->  GitHubServer
 | Deliveries | Dict `{name}-runner-deliveries` | Claim before create |
 | Job image | Named Image `{name}-job` | Published at `Runner.create` |
 | Cache | Volume `{name}-cache` → `/cache` | Optional; not `actions/cache` |
-| Control plane | Server `GitHubServer` | HMAC, admission, create/cancel |
+| Control plane | Server `RunnerServer` | HMAC, admission, create/cancel |
 | Job | Sandbox | `python -m runner_modal.job` |
 
 Webhook: [`examples/github_webhook.py`](examples/github_webhook.py). Imperative: [`examples/imperative_create.py`](examples/imperative_create.py).

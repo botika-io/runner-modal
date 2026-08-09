@@ -18,7 +18,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Public surface is entity-based: `Runner` + nested `Runner.Job`. Mirror Modal (`create` / `from_name` / `objects` / `ephemeral`; Job ≈ Sandbox).
 - Export only via `__all__`. Do not underscore-prefix types for “privacy”; omit them from `__all__` instead.
 - No free public helpers (`spawn`, `parse_labels`, pools, ASGI attach helpers).
-- One `Runner.create` per App. Modal Server class is stable `GitHubServer` (Servers have no parameters). Runner identity is `RUNNER_MODAL_NAME`.
+- One `Runner.create` per App. Modal Server class is stable `RunnerServer` (Servers have no parameters). Runner identity is `RUNNER_MODAL_NAME`.
 - Soft capacity (`has_capacity` / `max_concurrent`) is **soft** (list-then-create TOCTOU). Document it as soft; never present it as a linearizable lock.
 - **Job resources:** Modal-twin flat kwargs — `cpu`, `memory`, `gpu`, `experimental_options` (e.g. `{"vm_runtime": True}` for Docker/VM). Do **not** invent `ResourceSpec | DockerResources`, xor validators, or `isinstance` resource dispatch. Prefer `docker_image()` when `vm_runtime` is set; let Modal enforce GPU vs VM limits.
 

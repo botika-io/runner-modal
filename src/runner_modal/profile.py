@@ -1,4 +1,4 @@
-"""StageClock — env-gated stage timing for profile-driven optimization (not exported)."""
+"""StageClock — env-gated stage timing for profiling (not exported)."""
 
 from __future__ import annotations
 

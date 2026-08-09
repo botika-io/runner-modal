@@ -29,7 +29,7 @@ def test_public_exports_match_modal_style_surface() -> None:
         "InvalidNameError",
         "AlreadyExistsError",
         "JitConfig",
-        "GitHubServer",
+        "RunnerServer",
         "JobSpec",
     ):
         assert name not in runner_modal.__all__
@@ -160,7 +160,10 @@ def test_job_create_forwards_profile_env(monkeypatch: pytest.MonkeyPatch) -> Non
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
-        patch("runner_modal.runner.modal.Sandbox.create", return_value=fake_sb) as create,
+        patch(
+            "runner_modal.runner.modal.Sandbox.create",
+            return_value=fake_sb,
+        ) as create,
         patch("runner_modal.runner.modal.Image.from_name", return_value=MagicMock()),
     ):
         Runner.Job.create(
