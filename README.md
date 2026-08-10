@@ -1,8 +1,8 @@
 # runner-modal
 
-Unofficial library: self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners backed by [Modal](https://modal.com) Sandboxes.
+Self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners on [Modal](https://modal.com) Sandboxes.
 
-Not a Modal product. One type, `Runner`, registers a webhook control plane; jobs run as Sandboxes via `python -m runner_modal.job`.
+`Runner` registers a webhook control plane. Jobs run as Sandboxes via `python -m runner_modal.job`.
 
 ## Requirements
 
