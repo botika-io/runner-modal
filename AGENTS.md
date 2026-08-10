@@ -1,6 +1,6 @@
-# Agent rules — runner-modal
+# Agent rules - runner-modal
 
-Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python, and library-native APIs. Do not treat this as a product README.
+Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python, and library-native APIs. This is an unofficial library, not a Modal product README.
 
 ## Naming
 
@@ -13,9 +13,9 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Temporary diagnosis / repro hooks stay out of product PRs; use a throwaway local branch or one-off workflow for testing, not names that look permanent.
 - Match Modal twin vocabulary for public entities (`create` / `from_name` / `objects` / `ephemeral` / `hydrate`); do not invent parallel jargon for the same idea.
 
-## Product / DX
+## Public DX
 
-- Public surface is entity-based: `Runner` + nested `Runner.Job`. Mirror Modal (`create` / `from_name` / `objects` / `ephemeral`; Job ≈ Sandbox).
+- Public surface is entity-based: `Runner` + nested `Runner.Job`. Prefer Modal SDK vocabulary (`create` / `from_name` / `objects` / `ephemeral`; Job ≈ Sandbox) without presenting this as an official Modal product.
 - Export only via `__all__`. Do not underscore-prefix types for “privacy”; omit them from `__all__` instead.
 - No free public helpers (`spawn`, `parse_labels`, pools, ASGI attach helpers).
 - One `Runner.create` per App. Modal Server class is stable `RunnerServer` (Servers have no parameters). Runner identity is `RUNNER_MODAL_NAME`.

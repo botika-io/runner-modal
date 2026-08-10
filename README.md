@@ -1,8 +1,8 @@
 # runner-modal
 
-Self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners on [Modal](https://modal.com).
+Unofficial library: self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners backed by [Modal](https://modal.com) Sandboxes.
 
-`Runner` registers a webhook control plane. Jobs run as Sandboxes (`python -m runner_modal.job`). The API mirrors Modal: `Runner` ≈ Volume + Server, `Runner.Job` ≈ Sandbox.
+Not a Modal product. One type, `Runner`, registers a webhook control plane; jobs run as Sandboxes via `python -m runner_modal.job`.
 
 ## Requirements
 
@@ -122,17 +122,17 @@ job = Runner.Job.create(
 job.wait()
 ```
 
-Docker / VM (no GPU): `experimental_options={"vm_runtime": True}`. Resources are Modal-flat: `cpu`, `memory`, `gpu`, `experimental_options`.
+Docker / VM (no GPU): `experimental_options={"vm_runtime": True}`. Job kwargs are Modal Sandbox-shaped: `cpu`, `memory`, `gpu`, `experimental_options`.
 
 ## API
 
-| Call | Modal analogue |
-|------|----------------|
-| `Runner.create(app, name, secret=…)` | `@app.server` + publish job Image |
-| `Runner.from_name` / `objects` / `ephemeral` | `Volume.*` |
-| `runner.url` | `Server.get_url()` (`None` until ready) |
-| `Runner.Job.create(…, repository=…, secret=…)` | `Sandbox.create` |
-| `Runner.Job.from_id` / `from_name` / `wait` | `Sandbox.*` |
+| Call | Notes |
+|------|-------|
+| `Runner.create(app, name, secret=…)` | Registers Server + publishes job Image |
+| `Runner.from_name` / `objects` / `ephemeral` | Named handle / admin |
+| `runner.url` | Server URL, or `None` until ready |
+| `Runner.Job.create(…, repository=…, secret=…)` | Eager job Sandbox |
+| `Runner.Job.from_id` / `from_name` / `wait` | Lookup / block |
 | `POST {url}/github` | Claim → create → 200 / 204 / 5xx |
 
 | Situation | Result |
