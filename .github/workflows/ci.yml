@@ -13,8 +13,12 @@ concurrency:
 jobs:
   test:
     name: python
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on:
+      - self-hosted
+      - modal
+      - ci
+      - job-${{ github.run_id }}-${{ github.job }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 

@@ -32,24 +32,6 @@ from runner_modal.server import SERVER_CLASS_NAME, RunnerServer
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 
 
-def require_repositories(repositories: Sequence[str]) -> list[str]:
-    if not repositories:
-        raise ValueError("repositories must be a non-empty sequence of 'owner/repo'")
-    out: list[str] = []
-    for repo in repositories:
-        if repo.count("/") != 1:
-            raise ValueError(f"repository must be 'owner/repo', got {repo!r}")
-        out.append(repo)
-    return out
-
-
-def require_named_secret(secret: modal.Secret, *, label: str) -> str:
-    name = secret.name
-    if not name:
-        raise ValueError(f"{label} requires a named Secret (modal.Secret.from_name)")
-    return name
-
-
 class RunnerObjects:
     """Admin namespace — same shape as ``Volume.objects`` / ``Dict.objects``."""
 
@@ -522,11 +504,27 @@ class Runner:
             raise ValueError(f"invalid Runner name {name!r}")
         if not app.name:
             raise ValueError(
-                "Runner.create requires a named App, e.g. modal.App('acme-ci')"
+                "Runner.create requires a named App, e.g. modal.App('runner-modal-ci-app')"
             )
-        repos = require_repositories(repositories)
-        github_name = require_named_secret(github_secret, label="github_secret")
-        webhook_name = require_named_secret(webhook_secret, label="webhook_secret")
+        if not repositories:
+            raise ValueError(
+                "repositories must be a non-empty sequence of 'owner/repo'"
+            )
+        repos: list[str] = []
+        for repo in repositories:
+            if repo.count("/") != 1:
+                raise ValueError(f"repository must be 'owner/repo', got {repo!r}")
+            repos.append(repo)
+        github_name = github_secret.name
+        if not github_name:
+            raise ValueError(
+                "github_secret requires a named Secret (modal.Secret.from_name)"
+            )
+        webhook_name = webhook_secret.name
+        if not webhook_name:
+            raise ValueError(
+                "webhook_secret requires a named Secret (modal.Secret.from_name)"
+            )
 
         runner = cls.from_name(
             name,

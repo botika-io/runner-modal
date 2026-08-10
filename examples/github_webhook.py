@@ -9,7 +9,9 @@ Setup (two Secrets — never co-mount WEBHOOK_SECRET into Jobs):
   modal deploy examples/github_webhook.py
 
 Webhook: ``{runner.url}/github``
-runs-on: [self-hosted, modal, acme, \"job-${{ github.run_id }}-${{ github.job }}\"]
+runs-on: [self-hosted, modal, ci, \"job-${{ github.run_id }}-${{ github.job }}\"]
+
+``min_containers=0`` keeps the App deployed with a scale-to-zero control plane.
 """
 
 from __future__ import annotations
@@ -20,18 +22,19 @@ from runner_modal import Runner
 
 REPO = "modal-projects/runner-modal"
 
-app = modal.App("acme-ci")
+app = modal.App("runner-modal-ci-app")
 github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 webhook = modal.Secret.from_name("github-webhook", required_keys=["WEBHOOK_SECRET"])
 
 runner = Runner.create(
     app=app,
-    name="acme",
+    name="ci",
     github_secret=github,
     webhook_secret=webhook,
     repositories=[REPO],
     compute_region="us-east",
-    labels=["self-hosted", "modal", "acme"],
+    labels=["self-hosted", "modal", "ci"],
     max_concurrent=20,
+    min_containers=0,
     idle_timeout=900,
 )

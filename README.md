@@ -26,25 +26,26 @@ modal deploy examples/github_webhook.py
 import modal
 from runner_modal import Runner
 
-app = modal.App("acme-ci")
+app = modal.App("runner-modal-ci-app")
 github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 webhook = modal.Secret.from_name("github-webhook", required_keys=["WEBHOOK_SECRET"])
 
 Runner.create(
     app=app,
-    name="acme",
+    name="ci",
     github_secret=github,
     webhook_secret=webhook,
-    repositories=["acme/api"],
+    repositories=["modal-projects/runner-modal"],
     compute_region="us-east",
-    labels=["self-hosted", "modal", "acme"],
+    labels=["self-hosted", "modal", "ci"],
     max_concurrent=20,
+    min_containers=0,
     idle_timeout=900,
 )
 ```
 
 ```python
-print(Runner.from_name("acme").url)  # None until ready
+print(Runner.from_name("ci").url)  # None until ready
 # Webhook URL: {url}/github
 ```
 
@@ -52,11 +53,11 @@ print(Runner.from_name("acme").url)  # None until ready
 runs-on:
   - self-hosted
   - modal
-  - acme
+  - ci
   - job-${{ github.run_id }}-${{ github.job }}
 ```
 
-One `Runner.create` per App. It publishes named Image `{name}-job`. Include every pool label plus a unique pin so one runner maps to one job.
+One `Runner.create` per App. It publishes named Image `{name}-job`. Include every pool label plus a unique pin so one runner maps to one job. Use `min_containers=0` to keep the App deployed while scaling the control plane to zero when idle.
 
 | Key | Secret | Mounted on | Purpose |
 |-----|--------|------------|---------|
@@ -117,8 +118,8 @@ github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 
 job = Runner.Job.create(
     runner,
-    repository="acme/api",
-    labels=["modal", "acme", "job-1"],
+    repository="modal-projects/runner-modal",
+    labels=["modal", "ci", "job-1"],
     github_secret=github,
     gpu="t4",
 )

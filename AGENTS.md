@@ -91,13 +91,18 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 ## Learned User Preferences
 
 - Optimize from measured profile data only; do not infer bottlenecks. Prefer general, non-overfit changes that keep functionality — no micro-hack opts.
-- README perf content: Python-generated charts for general CI-runner metrics people care about (including vs GitHub Actions when relevant); do not overfit the README to a single profile run. Use the readme skill when revamping READMEs.
+- README perf content: Python-generated charts for general CI-runner metrics people care about (including vs GitHub Actions when relevant); do not overfit the README to a single profile run. Use the readme skill when revamping READMEs. Keep README concise; no em dashes.
 - Create repos under `modal-projects` as `internal` (never `--public`); treat public creation as a mistake to prevent.
 - Keep the webhook control plane on Modal Server (`RunnerServer`); do not migrate it to Functions/`asgi_app` unless evidence clearly outweighs the warm concurrent spawn twin.
 - After dogfood or profiling sessions, stop/remove Modal apps, Sandboxes, and leftover GitHub self-hosted runners you spun up.
+- Operator-deployed library (each user deploys themselves), not a managed multi-tenant SaaS; no backward compatibility required for the OSS revamp.
+- Public DX stays entity-only: no free helper functions; put lead concerns on entities or methods on the owning entity.
+- Brand as `runner-modal` without posing as a Modal product; quiet non-affiliation is enough (do not over-emphasize).
+- Keep `.cursor/` gitignored and uncommitted.
 
 ## Learned Workspace Facts
 
 - Profiling / bench harness lives under `scripts/` (e.g. `scripts/profile.py`, `scripts/charts.py`), not under `examples/`.
 - This repo is a uv project; prefer `uv run modal` (or project-local Modal) over ad-hoc `uvx modal` when Modal is a dependency.
-- Self-hosted dogfood CI needs a live deployed control plane (e.g. `acme-ci`); patching the GitHub webhook URL without also setting the secret desyncs HMAC from Modal `WEBHOOK_SECRET`.
+- This repo’s dogfood control plane is Modal App `runner-modal-ci-app` (`examples/github_webhook.py`) with `min_containers=0` — keep it deployed rather than stopping after sessions. Patching the GitHub webhook URL without also setting the secret desyncs HMAC from Modal `WEBHOOK_SECRET`.
+- Profile and e2e dogfood against the current repo `modal-projects/runner-modal`, not placeholder or octocat repos.
