@@ -29,7 +29,7 @@ class RunnerServer:
             webhook_secret = os.environ["WEBHOOK_SECRET"]
         except KeyError as e:
             raise RuntimeError(
-                "WEBHOOK_SECRET is required (modal.Secret on Runner.create)"
+                "WEBHOOK_SECRET is required (webhook_secret= on Runner.create)"
             ) from e
 
         fastapi_app = WebhookApp.for_runner(name, webhook_secret=webhook_secret)

@@ -5,6 +5,15 @@ description = "GitHub Actions self-hosted runners on Modal Sandboxes"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
+keywords = ["modal", "github-actions", "ci", "runners", "sandbox"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
@@ -13,6 +22,12 @@ dependencies = [
     "tenacity>=9.0.0",
     "uvicorn[standard]>=0.32.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/modal-projects/runner-modal"
+Repository = "https://github.com/modal-projects/runner-modal"
+Issues = "https://github.com/modal-projects/runner-modal/issues"
+
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12.0"]

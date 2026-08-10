@@ -19,7 +19,7 @@ from runner_modal.api import (
     WorkflowJobEvent,
 )
 from runner_modal.exceptions import AuthError, ConcurrencyLimitError
-from runner_modal.runner import RunnerMeta
+from runner_modal.meta import RunnerMeta
 
 
 def sign(body: bytes, secret: str) -> str:
@@ -27,10 +27,11 @@ def sign(body: bytes, secret: str) -> str:
 
 
 POOL_LABELS = ["self-hosted", "modal", "acme"]
+REPO = "acme/api"
 HOOK = "hook"
 
 
-def queued_body(*, labels: list[str] | None = None) -> bytes:
+def queued_body(*, labels: list[str] | None = None, repository: str = REPO) -> bytes:
     return json.dumps(
         {
             "action": "queued",
@@ -39,40 +40,54 @@ def queued_body(*, labels: list[str] | None = None) -> bytes:
                 "run_id": 1,
                 "labels": labels if labels is not None else list(POOL_LABELS),
             },
-            "repository": {"full_name": "acme/api"},
+            "repository": {"full_name": repository},
         }
     ).encode()
 
 
-def cancelled_body(*, job_id: int = 42) -> bytes:
+def cancelled_body(*, job_id: int = 42, repository: str = REPO) -> bytes:
     return json.dumps(
         {
             "action": "cancelled",
-            "workflow_job": {"id": job_id, "run_id": 1, "labels": list(POOL_LABELS)},
-            "repository": {"full_name": "acme/api"},
+            "workflow_job": {
+                "id": job_id,
+                "run_id": 1,
+                "labels": list(POOL_LABELS),
+            },
+            "repository": {"full_name": repository},
         }
     ).encode()
 
 
-def mock_runner(*, labels: list[str] | None = None) -> MagicMock:
+def mock_runner(
+    *,
+    labels: list[str] | None = None,
+    repositories: list[str] | None = None,
+) -> MagicMock:
     """Unhydrated handle: labels empty until ``hydrate`` loads persisted pool meta."""
     pool = list(labels) if labels is not None else list(POOL_LABELS)
+    repos = list(repositories) if repositories is not None else [REPO]
     runner = MagicMock()
-    runner.meta = RunnerMeta(name="acme", labels=[])
+    runner.meta = RunnerMeta(name="acme", labels=[], repositories=[])
     runner.environment_name = None
     runner.client = None
+    runner.job_app.return_value = MagicMock(name="app")
 
     def hydrate() -> None:
         runner.meta = RunnerMeta(
             name="acme",
             labels=pool,
-            app_name=runner.meta.app_name,
+            repositories=repos,
+            app_name=runner.meta.app_name or "acme-ci",
             server_name=runner.meta.server_name,
-            secret_name="github-runner",
+            github_secret_name="github-token",
+            webhook_secret_name="github-webhook",
         )
 
-    def admits(job_labels: list[str]) -> bool:
+    def admits(job_labels: list[str], repository: str) -> bool:
         runner.hydrate()
+        if repository not in set(runner.meta.repositories):
+            return False
         configured = set(runner.meta.labels)
         present = set(job_labels)
         return bool(configured) and "self-hosted" in present and configured <= present
@@ -112,8 +127,32 @@ def test_workflow_event_bad_signature() -> None:
             body,
             {
                 "x-github-event": "workflow_job",
+                "x-github-delivery": "d1",
                 "x-hub-signature-256": sign(body, "wrong"),
             },
+            secret=HOOK,
+        )
+
+
+def test_workflow_event_missing_delivery() -> None:
+    body = queued_body()
+    with pytest.raises(AuthError, match="X-GitHub-Delivery"):
+        WorkflowJobEvent.from_request(
+            body,
+            {
+                "x-github-event": "workflow_job",
+                "x-hub-signature-256": sign(body, HOOK),
+            },
+            secret=HOOK,
+        )
+
+
+def test_workflow_event_missing_signature_header() -> None:
+    body = queued_body()
+    with pytest.raises(AuthError, match="X-Hub-Signature-256"):
+        WorkflowJobEvent.from_request(
+            body,
+            {"x-github-event": "workflow_job", "x-github-delivery": "d1"},
             secret=HOOK,
         )
 
@@ -130,7 +169,7 @@ def test_workflow_event_queued() -> None:
         secret=HOOK,
     )
     assert event is not None
-    assert event.repo == "acme/api"
+    assert event.repo == REPO
     assert event.job_id == 42
     assert event.delivery_id == "d1"
 
@@ -162,6 +201,7 @@ def test_workflow_event_ignores_completed() -> None:
             body,
             {
                 "x-github-event": "workflow_job",
+                "x-github-delivery": "d-done",
                 "x-hub-signature-256": sign(body, HOOK),
             },
             secret=HOOK,
@@ -190,16 +230,37 @@ def test_try_claim_reclaims_stale_pending() -> None:
     store.put.assert_called_once()
 
 
+def test_try_claim_does_not_reclaim_pending_with_object_id() -> None:
+    store = MagicMock()
+    pending = DeliveryRecord(
+        status="pending",
+        ts=time.time() - PENDING_TTL_SECONDS - 1,
+        object_id="sb-bound",
+    ).model_dump(mode="json")
+    store.get.return_value = pending
+
+    deliveries = DeliveryStore.__new__(DeliveryStore)
+    deliveries.store = store
+    got = deliveries.try_claim("d-bound")
+    assert got is not None
+    assert got.object_id == "sb-bound"
+    store.__delitem__.assert_not_called()
+    store.put.assert_not_called()
+
+
 def test_github_webhook_200() -> None:
     fake_job = MagicMock()
     fake_job.object_id = "sb-ok"
     runner = mock_runner()
     gh = MagicMock()
     runner.github_secret.return_value = gh
+    app = MagicMock()
+    runner.job_app.return_value = app
 
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(DeliveryStore, "try_claim", return_value=None),
+        patch.object(DeliveryStore, "bind_object") as bind,
         patch.object(DeliveryStore, "mark_done") as mark_done,
         patch("runner_modal.runner.Runner.from_name", return_value=runner),
         patch("runner_modal.runner.Runner.Job.create", return_value=fake_job) as create,
@@ -207,8 +268,10 @@ def test_github_webhook_200() -> None:
         resp = post_github(client(), queued_body(), delivery="deliv-1")
         assert resp.status_code == 200
         assert resp.json() == {"object_id": "sb-ok", "name": "job-42"}
+        bind.assert_called_once_with("deliv-1", "sb-ok")
         mark_done.assert_called_once_with("deliv-1", "sb-ok")
-        assert create.call_args.kwargs["secret"] is gh
+        assert create.call_args.kwargs["github_secret"] is gh
+        assert create.call_args.kwargs["app"] is app
 
 
 def test_github_webhook_401_bad_hmac() -> None:
@@ -248,6 +311,20 @@ def test_github_webhook_204_label_mismatch() -> None:
         patch("runner_modal.runner.Runner.Job.create") as create,
     ):
         resp = post_github(client(), queued_body(labels=["modal"]))
+        assert resp.status_code == 204
+        create.assert_not_called()
+
+
+def test_github_webhook_204_repo_mismatch() -> None:
+    with (
+        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch(
+            "runner_modal.runner.Runner.from_name",
+            return_value=mock_runner(repositories=["other/repo"]),
+        ),
+        patch("runner_modal.runner.Runner.Job.create") as create,
+    ):
+        resp = post_github(client(), queued_body())
         assert resp.status_code == 204
         create.assert_not_called()
 
@@ -301,16 +378,6 @@ def test_github_webhook_cancelled_terminates() -> None:
     job = MagicMock()
     runner = mock_runner()
 
-    def hydrate() -> None:
-        runner.meta = RunnerMeta(
-            name="acme",
-            labels=POOL_LABELS,
-            app_name="acme-ci",
-            secret_name="github-runner",
-        )
-
-    runner.hydrate.side_effect = hydrate
-
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch("runner_modal.runner.Runner.from_name", return_value=runner),
@@ -327,18 +394,24 @@ def test_github_webhook_cancelled_terminates() -> None:
         create.assert_not_called()
 
 
+def test_github_webhook_cancelled_repo_mismatch_skips() -> None:
+    with (
+        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch(
+            "runner_modal.runner.Runner.from_name",
+            return_value=mock_runner(repositories=["other/repo"]),
+        ),
+        patch("runner_modal.runner.Runner.Job.from_name") as from_name,
+        patch("runner_modal.runner.Runner.Job.create") as create,
+    ):
+        resp = post_github(client(), cancelled_body())
+        assert resp.status_code == 204
+        from_name.assert_not_called()
+        create.assert_not_called()
+
+
 def test_github_webhook_cancelled_missing_job() -> None:
     runner = mock_runner()
-
-    def hydrate() -> None:
-        runner.meta = RunnerMeta(
-            name="acme",
-            labels=POOL_LABELS,
-            app_name="acme-ci",
-            secret_name="github-runner",
-        )
-
-    runner.hydrate.side_effect = hydrate
 
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
@@ -364,6 +437,21 @@ def test_github_webhook_duplicate_delivery() -> None:
         resp = post_github(client(), queued_body())
         assert resp.status_code == 200
         assert resp.json()["object_id"] == "sb-dup"
+        create.assert_not_called()
+
+
+def test_github_webhook_pending_with_object_id_returns_accepted() -> None:
+    pending = DeliveryRecord(status="pending", ts=1.0, object_id="sb-bound")
+
+    with (
+        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch.object(DeliveryStore, "try_claim", return_value=pending),
+        patch("runner_modal.runner.Runner.from_name", return_value=mock_runner()),
+        patch("runner_modal.runner.Runner.Job.create") as create,
+    ):
+        resp = post_github(client(), queued_body())
+        assert resp.status_code == 200
+        assert resp.json()["object_id"] == "sb-bound"
         create.assert_not_called()
 
 
@@ -429,6 +517,7 @@ def test_github_webhook_mark_done_failure_does_not_release() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(DeliveryStore, "try_claim", return_value=None),
+        patch.object(DeliveryStore, "bind_object"),
         patch.object(DeliveryStore, "mark_done", side_effect=RuntimeError("dict")),
         patch.object(DeliveryStore, "release") as release,
         patch("runner_modal.runner.Runner.from_name", return_value=runner),

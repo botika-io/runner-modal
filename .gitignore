@@ -10,5 +10,6 @@ dist/
 .DS_Store
 .modal/
 .agents/
+.cursor/
 
 skills-lock.json

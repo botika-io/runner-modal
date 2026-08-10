@@ -17,7 +17,6 @@ from runner_modal.exceptions import AuthError, ConcurrencyLimitError
 from runner_modal.profile import StageClock
 from runner_modal.runner import Runner
 
-DELIVERY_TTL_SECONDS = 7 * 24 * 3600
 PENDING_TTL_SECONDS = 15 * 60
 
 
@@ -77,8 +76,16 @@ class WorkflowJobEvent(BaseModel):
             raise AuthError("missing or invalid X-Hub-Signature-256")
         expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         received = signature.removeprefix("sha256=")
-        if not hmac.compare_digest(expected, received):
+        try:
+            matched = hmac.compare_digest(expected, received)
+        except ValueError as e:
+            raise AuthError("webhook signature mismatch") from e
+        if not matched:
             raise AuthError("webhook signature mismatch")
+
+        delivery = hdrs.get("x-github-delivery")
+        if not delivery:
+            raise AuthError("missing X-GitHub-Delivery")
 
         event_name = hdrs.get("x-github-event", "")
         if event_name and event_name != "workflow_job":
@@ -88,7 +95,6 @@ class WorkflowJobEvent(BaseModel):
         if event.action not in ("queued", "cancelled"):
             return None
 
-        delivery = hdrs.get("x-github-delivery") or str(event.workflow_job.id)
         return event.model_copy(update={"delivery_id": delivery})
 
 
@@ -110,9 +116,8 @@ class JobAccepted(BaseModel):
 class DeliveryStore:
     """Idempotency store for GitHub delivery IDs (Modal Dict).
 
-    Claim before side effects: ``try_claim`` → create → ``mark_done``.
-    ``trim`` is opportunistic GC — not called on the request hot path.
-    Stale ``pending`` claims are reclaimed lazily in ``try_claim``.
+    Claim before side effects: ``try_claim`` → create → ``bind_object`` → ``mark_done``.
+    Pending records with ``object_id`` are never reclaimed (create already succeeded).
     """
 
     def __init__(self, runner_name: str) -> None:
@@ -133,11 +138,14 @@ class DeliveryStore:
     def try_claim(self, delivery_id: str) -> DeliveryRecord | None:
         """Claim ``delivery_id``. Returns ``None`` if this caller won.
 
-        If the key already exists, returns the existing record (done or pending).
-        Stale pending older than ``PENDING_TTL_SECONDS`` are deleted and reclaimed.
+        If the key already exists, returns the existing record.
+        Stale pending without ``object_id`` older than ``PENDING_TTL_SECONDS``
+        may be deleted and reclaimed. Pending with ``object_id`` is never reclaimed.
         """
         existing = self.get(delivery_id)
         if existing is not None:
+            if existing.object_id is not None:
+                return existing
             if (
                 existing.status == "pending"
                 and time.time() - existing.ts > PENDING_TTL_SECONDS
@@ -156,23 +164,27 @@ class DeliveryStore:
             return None
         return self.get(delivery_id)
 
+    def bind_object(self, delivery_id: str, object_id: str) -> None:
+        """Record Sandbox id on a pending claim before ``mark_done``."""
+        self.store[delivery_id] = DeliveryRecord(
+            status="pending",
+            ts=time.time(),
+            object_id=object_id,
+        ).model_dump(mode="json")
+
     def mark_done(self, delivery_id: str, object_id: str) -> None:
         record = DeliveryRecord(status="done", ts=time.time(), object_id=object_id)
         self.store[delivery_id] = record.model_dump(mode="json")
 
     def release(self, delivery_id: str) -> None:
-        """Drop a pending claim so GitHub can retry."""
+        """Drop a pending claim so GitHub can retry (only if no object_id)."""
         record = self.get(delivery_id)
-        if record is not None and record.status == "pending":
+        if (
+            record is not None
+            and record.status == "pending"
+            and record.object_id is None
+        ):
             del self.store[delivery_id]
-
-    def trim(self) -> None:
-        """Opportunistic TTL cleanup — call from a schedule, not every request."""
-        now = time.time()
-        for key in list(self.store.keys()):
-            record = self.get(key)
-            if record is not None and now - record.ts > DELIVERY_TTL_SECONDS:
-                del self.store[key]
 
 
 class WebhookApp:
@@ -229,17 +241,17 @@ class WebhookApp:
 
         runner = Runner.from_name(self.runner_name)
 
-        if event.action == "cancelled":
-            self.terminate_job(runner, event.job_id)
+        if not runner.admits(event.labels, event.repo):
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-        if not runner.admits(event.labels):
+        if event.action == "cancelled":
+            self.terminate_job(runner, event.job_id)
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         with StageClock("delivery_claim"):
             existing = self.deliveries.try_claim(event.delivery_id)
         if existing is not None:
-            if existing.status == "done" and existing.object_id:
+            if existing.object_id:
                 return JobAccepted(object_id=existing.object_id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -251,10 +263,11 @@ class WebhookApp:
             with StageClock("job_create"):
                 job = Runner.Job.create(
                     runner,
+                    app=runner.job_app(),
                     repository=event.repo,
                     labels=event.labels,
                     name=job_name,
-                    secret=runner.github_secret(),
+                    github_secret=runner.github_secret(),
                 )
         except LookupError as e:
             self.deliveries.release(event.delivery_id)
@@ -267,7 +280,7 @@ class WebhookApp:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
             ) from e
         except modal.exception.AlreadyExistsError:
-            job = self.get_job(runner, job_name)
+            job = self.job_from_name(runner, job_name)
             if job is None:
                 self.deliveries.release(event.delivery_id)
                 raise
@@ -275,7 +288,9 @@ class WebhookApp:
             self.deliveries.release(event.delivery_id)
             raise
 
-        # Never release after a successful create — retry would double-spawn.
+        # Persist object_id before mark_done so TTL reclaim cannot double-spawn.
+        with StageClock("delivery_bind"):
+            self.deliveries.bind_object(event.delivery_id, job.object_id)
         with StageClock("delivery_mark_done"):
             self.deliveries.mark_done(event.delivery_id, job.object_id)
         return JobAccepted(
@@ -302,9 +317,6 @@ class WebhookApp:
         job = self.job_from_name(runner, f"job-{job_id}")
         if job is not None:
             job.terminate()
-
-    def get_job(self, runner: Runner, job_name: str) -> Runner.Job | None:
-        return self.job_from_name(runner, job_name)
 
     @classmethod
     def for_runner(cls, name: str, *, webhook_secret: str) -> FastAPI:

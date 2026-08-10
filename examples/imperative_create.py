@@ -2,10 +2,10 @@
 
 JIT mint runs inside the Sandbox using ``GITHUB_TOKEN`` from an explicit Secret.
 
-  modal secret create github-runner GITHUB_TOKEN=ghp_...
+  modal secret create github-token GITHUB_TOKEN=ghp_...
 
 Run (from repo root):
-  modal run examples/imperative_create.py --repository owner/repo
+  modal run examples/imperative_create.py
 """
 
 from __future__ import annotations
@@ -16,19 +16,22 @@ import modal
 
 from runner_modal import Runner
 
+REPO = "modal-projects/runner-modal"
+
 app = modal.App("runner-modal-example")
-gh = modal.Secret.from_name("github-runner", required_keys=["GITHUB_TOKEN"])
+github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 
 Runner.objects.create(
     "demo",
     allow_existing=True,
     labels=["modal", "demo"],
+    repositories=[REPO],
     max_concurrent=5,
 )
 
 
 @app.local_entrypoint()
-def main(repository: str = "octocat/Hello-World") -> None:
+def main(repository: str = REPO) -> None:
     parent = modal.App.lookup("runner-modal-example", create_if_missing=True)
     runner = Runner.from_name("demo")
 
@@ -38,7 +41,7 @@ def main(repository: str = "octocat/Hello-World") -> None:
         app=parent,
         repository=repository,
         labels=["modal", "demo", unique],
-        secret=gh,
+        github_secret=github,
         cpu=2.0,
         region="us-east",
         timeout=30 * 60,
