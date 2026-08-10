@@ -3,6 +3,7 @@ name = "runner-modal"
 version = "0.1.0"
 description = "GitHub Actions self-hosted runners on Modal Sandboxes"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

@@ -161,3 +161,7 @@ uv run ty check
 ```
 
 See [`AGENTS.md`](AGENTS.md) for conventions.
+
+## License
+
+[Apache License 2.0](LICENSE)
