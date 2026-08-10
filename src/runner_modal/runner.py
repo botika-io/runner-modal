@@ -504,7 +504,8 @@ class Runner:
             raise ValueError(f"invalid Runner name {name!r}")
         if not app.name:
             raise ValueError(
-                "Runner.create requires a named App, e.g. modal.App('runner-modal-ci-app')"
+                "Runner.create requires a named App, "
+                "e.g. modal.App('runner-modal-ci-app')"
             )
         if not repositories:
             raise ValueError(
