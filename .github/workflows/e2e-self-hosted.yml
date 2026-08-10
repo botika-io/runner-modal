@@ -1,6 +1,8 @@
 name: E2E self-hosted
 
 on:
+  push:
+    branches: [e2e-dogfood]
   workflow_dispatch:
 
 concurrency:
