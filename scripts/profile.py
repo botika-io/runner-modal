@@ -6,8 +6,8 @@ Matches the #4 shape: named Secret, JIT mint inside the Sandbox
 Run from repo root:
 
   modal run scripts/profile.py
-  modal run scripts/profile.py --with-job --repository owner/repo
-  modal run scripts/profile.py --with-job --with-online --repository owner/repo
+  modal run scripts/profile.py --with-job
+  modal run scripts/profile.py --with-job --with-online
 """
 
 from __future__ import annotations
@@ -27,13 +27,14 @@ app = modal.App("runner-modal-profile")
 POOL = "profile"
 APP_NAME = "runner-modal-profile"
 SECRET_NAME = "github-runner"
+REPO = "modal-projects/runner-modal"
 
 
 @app.local_entrypoint()
 def main(
-    repository: str = "botirkhaltaev/runic",
+    repository: str = REPO,
     with_job: bool = False,
-    with_volume: bool = True,
+    with_volume: bool = False,
     with_online: bool = False,
 ) -> None:
     os.environ.setdefault("RUNNER_MODAL_PROFILE", "1")
@@ -45,6 +46,7 @@ def main(
             POOL,
             allow_existing=True,
             labels=["self-hosted", "modal", "profile"],
+            repositories=[repository],
             max_concurrent=20,
             cache=with_volume,
         )
@@ -118,7 +120,7 @@ def main(
                 app=parent,
                 repository=repository,
                 labels=labels,
-                secret=gh,
+                github_secret=gh,
                 name=job_name,
                 runner_name=runner_reg_name,
                 region="us-east",
