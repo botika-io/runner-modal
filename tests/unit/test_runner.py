@@ -11,7 +11,7 @@ import runner_modal
 from runner_modal import Runner, RunnerInfo
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
-from runner_modal.runner import JOB_KIND, JOB_MODULE, KIND_TAG, POOL_TAG
+from runner_modal.meta import JOB_KIND, JOB_MODULE, KIND_TAG, POOL_TAG, RunnerMeta
 
 
 def test_public_exports_match_modal_style_surface() -> None:
@@ -31,6 +31,8 @@ def test_public_exports_match_modal_style_surface() -> None:
         "JitConfig",
         "RunnerServer",
         "JobSpec",
+        "DeliveryStore",
+        "WebhookApp",
     ):
         assert name not in runner_modal.__all__
         assert name not in vars(runner_modal)
@@ -58,20 +60,23 @@ def test_job_factories_mirror_sandbox() -> None:
     assert "experimental_options" in sig.parameters
     assert "resources" not in sig.parameters
     assert "jit_config" not in sig.parameters
-    assert "secret" in sig.parameters
+    assert "github_secret" in sig.parameters
+    assert "secret" not in sig.parameters
     assert list(sig.parameters)[0] == "runner"
 
 
-def test_create_signature_requires_named_secret() -> None:
+def test_create_signature_requires_split_secrets_and_repos() -> None:
     sig = inspect.signature(Runner.create)
     assert not any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
-    assert "secret" in sig.parameters
+    assert "github_secret" in sig.parameters
+    assert "webhook_secret" in sig.parameters
+    assert "repositories" in sig.parameters
+    assert "secret" not in sig.parameters
     assert "secrets" not in sig.parameters
     assert "job_image" not in sig.parameters
-    assert not hasattr(Runner, "job_images")
+    assert sig.parameters["cache"].default is False
     for name in ("repository", "timeout", "region", "resources"):
         assert name not in sig.parameters
-    assert "gpu" in inspect.signature(Runner.Job.create).parameters
 
 
 def test_job_create_raises_when_at_capacity() -> None:
@@ -83,7 +88,7 @@ def test_job_create_raises_when_at_capacity() -> None:
         patch.object(runner, "has_capacity", return_value=False),
         pytest.raises(ConcurrencyLimitError, match="max_concurrent"),
     ):
-        Runner.Job.create(runner, repository="a/b", secret=secret)
+        Runner.Job.create(runner, repository="a/b", github_secret=secret)
 
 
 def test_has_capacity_lbyl() -> None:
@@ -111,7 +116,7 @@ def test_job_create_passes_secret_and_spec() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-test"
     runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
-    runner.meta.job_image_name = "p-job"
+    runner.meta = runner.meta.model_copy(update={"job_image_name": "p-job"})
     gh = MagicMock()
     fake_image = MagicMock()
 
@@ -129,7 +134,7 @@ def test_job_create_passes_secret_and_spec() -> None:
             runner,
             repository="a/b",
             labels=["job-1"],
-            secret=gh,
+            github_secret=gh,
             cpu=2.0,
         )
         assert job.object_id == "sb-test"
@@ -139,6 +144,9 @@ def test_job_create_passes_secret_and_spec() -> None:
         assert kwargs["image"] is fake_image
         assert kwargs["secrets"][0] is gh
         assert "MODAL_RUNNER_JIT" not in (kwargs.get("env") or {})
+        from runner_modal.profile import StageClock
+
+        assert StageClock.ENV not in (kwargs.get("env") or {})
         spec = JobSpec.model_validate_json(kwargs["env"][JOB_SPEC_ENV])
         assert spec.repository == "a/b"
         assert "modal" in spec.labels
@@ -146,30 +154,6 @@ def test_job_create_passes_secret_and_spec() -> None:
         assert kwargs["tags"][KIND_TAG] == JOB_KIND
         assert kwargs["tags"][POOL_TAG] == "p"
         assert kwargs["cpu"] == 2.0
-
-
-def test_job_create_forwards_profile_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from runner_modal.profile import StageClock
-
-    fake_sb = MagicMock()
-    fake_sb.object_id = "sb-prof"
-    runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
-    runner.meta.job_image_name = "p-job"
-    monkeypatch.setenv(StageClock.ENV, "1")
-
-    with (
-        patch.object(runner, "hydrate"),
-        patch.object(runner, "has_capacity", return_value=True),
-        patch(
-            "runner_modal.runner.modal.Sandbox.create",
-            return_value=fake_sb,
-        ) as create,
-        patch("runner_modal.runner.modal.Image.from_name", return_value=MagicMock()),
-    ):
-        Runner.Job.create(
-            runner, repository="a/b", labels=["job-1"], secret=MagicMock()
-        )
-        assert create.call_args.kwargs["env"][StageClock.ENV] == "1"
 
 
 def test_job_create_without_image_name_builds_default() -> None:
@@ -189,7 +173,7 @@ def test_job_create_without_image_name_builds_default() -> None:
         patch.object(Runner, "default_image", return_value=built) as default_image,
         patch("runner_modal.runner.modal.Image.from_name") as from_name,
     ):
-        Runner.Job.create(runner, repository="a/b", labels=["job-1"], secret=gh)
+        Runner.Job.create(runner, repository="a/b", labels=["job-1"], github_secret=gh)
         default_image.assert_called_once()
         from_name.assert_not_called()
         assert create.call_args.kwargs["image"] is built
@@ -198,8 +182,10 @@ def test_job_create_without_image_name_builds_default() -> None:
 def test_runner_create_publishes_named_job_image() -> None:
     app = MagicMock()
     app.name = "acme-ci"
-    secret = MagicMock()
-    secret.name = "github-runner"
+    github = MagicMock()
+    github.name = "github-token"
+    webhook = MagicMock()
+    webhook.name = "github-webhook"
     recipe = MagicMock()
     built = MagicMock()
     recipe.build.return_value = built
@@ -213,12 +199,14 @@ def test_runner_create_publishes_named_job_image() -> None:
         patch.object(Runner, "default_image", return_value=recipe),
         patch.object(Runner, "control_plane_image", return_value=MagicMock()),
         patch("runner_modal.runner.modal.App.lookup", return_value=build_app) as lookup,
-        patch.object(app, "server", return_value=lambda cls: cls),
+        patch.object(app, "server", return_value=lambda cls: cls) as server,
     ):
         out = Runner.create(
             app=app,
             name="acme",
-            secret=secret,
+            github_secret=github,
+            webhook_secret=webhook,
+            repositories=["acme/api"],
             labels=["self-hosted", "modal", "acme"],
         )
         assert out is runner_handle
@@ -233,8 +221,25 @@ def test_runner_create_publishes_named_job_image() -> None:
             "acme-job", environment_name=None, client=None
         )
         assert runner_handle.meta.job_image_name == "acme-job"
-        assert runner_handle.meta.secret_name == "github-runner"
+        assert runner_handle.meta.github_secret_name == "github-token"
+        assert runner_handle.meta.webhook_secret_name == "github-webhook"
+        assert runner_handle.meta.repositories == ["acme/api"]
+        assert runner_handle.meta.cache is False
         persist.assert_called_once()
+        assert server.call_args.kwargs["secrets"] == [webhook]
+
+
+def test_runner_create_rejects_empty_repositories() -> None:
+    app = MagicMock()
+    app.name = "acme-ci"
+    with pytest.raises(ValueError, match="repositories"):
+        Runner.create(
+            app=app,
+            name="acme",
+            github_secret=MagicMock(name="g"),
+            webhook_secret=MagicMock(name="w"),
+            repositories=[],
+        )
 
 
 def test_job_create_docker_sets_vm() -> None:
@@ -255,7 +260,7 @@ def test_job_create_docker_sets_vm() -> None:
             runner,
             repository="a/b",
             labels=["modal"],
-            secret=gh,
+            github_secret=gh,
             experimental_options={"vm_runtime": True},
         )
         assert create.call_args.kwargs["experimental_options"]["vm_runtime"] is True
@@ -290,23 +295,31 @@ def test_jit_auth_and_repo() -> None:
 
 
 def test_runner_info_model() -> None:
-    from runner_modal.runner import RunnerMeta
-
-    assert "secret_name" in RunnerInfo.model_fields
-    assert "job_image_name" in RunnerInfo.model_fields
+    assert "github_secret_name" in RunnerInfo.model_fields
+    assert "webhook_secret_name" in RunnerInfo.model_fields
+    assert "repositories" in RunnerInfo.model_fields
+    assert "secret_name" not in RunnerInfo.model_fields
     assert "job_image_name" in RunnerMeta.model_fields
-    assert "job_image_id" not in RunnerMeta.model_fields
+    assert RunnerMeta.model_fields["cache"].default is False
 
 
 def test_admits() -> None:
     runner = Runner.from_name(
-        "p", create_if_missing=True, labels=["self-hosted", "modal"]
+        "p",
+        create_if_missing=True,
+        labels=["self-hosted", "modal"],
+        repositories=["acme/api"],
     )
     with patch.object(runner, "hydrate"):
-        runner.meta.labels = ["self-hosted", "modal"]
-        assert runner.admits(["self-hosted", "modal", "job-1"]) is True
-        assert runner.admits(["modal", "job-1"]) is False
-        assert runner.admits(["ubuntu-latest"]) is False
-    runner.meta.labels = []
+        runner.meta = runner.meta.model_copy(
+            update={
+                "labels": ["self-hosted", "modal"],
+                "repositories": ["acme/api"],
+            }
+        )
+        assert runner.admits(["self-hosted", "modal", "job-1"], "acme/api") is True
+        assert runner.admits(["modal", "job-1"], "acme/api") is False
+        assert runner.admits(["self-hosted", "modal"], "other/repo") is False
+    runner.meta = runner.meta.model_copy(update={"labels": [], "repositories": []})
     with patch.object(runner, "hydrate"):
-        assert runner.admits(["self-hosted", "modal"]) is False
+        assert runner.admits(["self-hosted", "modal"], "acme/api") is False

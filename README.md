@@ -2,21 +2,22 @@
 
 Self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners on [Modal](https://modal.com) Sandboxes.
 
+You deploy your own Modal App and Secrets. This is not a managed multi-tenant service.
+
 `Runner` registers a webhook control plane. Jobs run as Sandboxes via `python -m runner_modal.job`.
 
 ## Requirements
 
 - Python >= 3.12, [Modal](https://modal.com) CLI
-- Named Modal Secret with `GITHUB_TOKEN` and `WEBHOOK_SECRET`
+- Two named Modal Secrets: `GITHUB_TOKEN` (Jobs) and `WEBHOOK_SECRET` (Server)
 
 ## Quick start
 
 ```bash
 uv sync
 
-modal secret create github-runner \
-  GITHUB_TOKEN=ghp_xxx \
-  WEBHOOK_SECRET=$(openssl rand -hex 32)
+modal secret create github-token GITHUB_TOKEN=ghp_xxx
+modal secret create github-webhook WEBHOOK_SECRET=$(openssl rand -hex 32)
 
 modal deploy examples/github_webhook.py
 ```
@@ -26,15 +27,15 @@ import modal
 from runner_modal import Runner
 
 app = modal.App("acme-ci")
-gh = modal.Secret.from_name(
-    "github-runner",
-    required_keys=["GITHUB_TOKEN", "WEBHOOK_SECRET"],
-)
+github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
+webhook = modal.Secret.from_name("github-webhook", required_keys=["WEBHOOK_SECRET"])
 
 Runner.create(
     app=app,
     name="acme",
-    secret=gh,
+    github_secret=github,
+    webhook_secret=webhook,
+    repositories=["acme/api"],
     compute_region="us-east",
     labels=["self-hosted", "modal", "acme"],
     max_concurrent=20,
@@ -55,19 +56,21 @@ runs-on:
   - job-${{ github.run_id }}-${{ github.job }}
 ```
 
-One `Runner.create` per App. It publishes named Image `{name}-job` and stores `secret_name` / `job_image_name` for the webhook path. Include every pool label plus a unique pin so one runner maps to one job.
+One `Runner.create` per App. It publishes named Image `{name}-job`. Include every pool label plus a unique pin so one runner maps to one job.
 
-| Key | Used by | Purpose |
-|-----|---------|---------|
-| `GITHUB_TOKEN` | Job Sandbox | Mint JIT inside the job |
-| `WEBHOOK_SECRET` | Server | HMAC on `POST /github` |
+| Key | Secret | Mounted on | Purpose |
+|-----|--------|------------|---------|
+| `GITHUB_TOKEN` | `github_secret` | Job Sandbox only | Mint JIT inside the job |
+| `WEBHOOK_SECRET` | `webhook_secret` | Server only | HMAC on `POST /github` |
 
-Named Secrets only. Never put tokens or JIT in Sandbox `env=`.
+Never put both keys in one Secret. Never put tokens or JIT in Sandbox `env=`.
 
 ## How it works
 
 ```text
 GitHub  --workflow_job-->  RunnerServer
+                              |
+                       admit (repo + labels)
                               |
                        claim delivery ID
                               |
@@ -80,14 +83,14 @@ GitHub  --workflow_job-->  RunnerServer
 
 | Piece | Modal object | Role |
 |-------|--------------|------|
-| Meta | Dict `{name}-runner-meta` | Labels, capacity, secret/image names |
+| Meta | Dict `{name}-runner-meta` | Labels, repos, capacity, secret/image names |
 | Deliveries | Dict `{name}-runner-deliveries` | Claim before create |
 | Job image | Named Image `{name}-job` | Published at `Runner.create` |
-| Cache | Volume `{name}-cache` → `/cache` | Optional; not `actions/cache` |
+| Cache | Volume `{name}-cache` → `/cache` | Optional (`cache=True`); same-pool Volume, not `actions/cache` |
 | Control plane | Server `RunnerServer` | HMAC, admission, create/cancel |
 | Job | Sandbox | `python -m runner_modal.job` |
 
-Admission: job has `self-hosted`, pool is non-empty, and `pool ⊆ job.labels`.
+Admission: repository is in `repositories`, job has `self-hosted`, pool is non-empty, and `pool ⊆ job.labels`.
 
 Examples: [`github_webhook.py`](examples/github_webhook.py), [`imperative_create.py`](examples/imperative_create.py).
 
@@ -110,13 +113,13 @@ Charts are illustrative. Regenerate with `uv run --group dev python scripts/char
 ## Imperative jobs
 
 ```python
-gh = modal.Secret.from_name("github-runner", required_keys=["GITHUB_TOKEN"])
+github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 
 job = Runner.Job.create(
     runner,
     repository="acme/api",
     labels=["modal", "acme", "job-1"],
-    secret=gh,
+    github_secret=github,
     gpu="t4",
 )
 job.wait()
@@ -128,12 +131,12 @@ Docker / VM (no GPU): `experimental_options={"vm_runtime": True}`. Job kwargs ar
 
 | Call | Notes |
 |------|-------|
-| `Runner.create(app, name, secret=…)` | Registers Server + publishes job Image |
+| `Runner.create(app, name, github_secret=…, webhook_secret=…, repositories=…)` | Registers Server + publishes job Image |
 | `Runner.from_name` / `objects` / `ephemeral` | Named handle / admin |
 | `runner.url` | Server URL, or `None` until ready |
-| `Runner.Job.create(…, repository=…, secret=…)` | Eager job Sandbox |
+| `Runner.Job.create(…, repository=…, github_secret=…)` | Eager job Sandbox |
 | `Runner.Job.from_id` / `from_name` / `wait` | Lookup / block |
-| `POST {url}/github` | Claim → create → 200 / 204 / 5xx |
+| `POST {url}/github` | Admit → claim → create → 200 / 204 / 5xx |
 
 | Situation | Result |
 |-----------|--------|
@@ -141,14 +144,14 @@ Docker / VM (no GPU): `experimental_options={"vm_runtime": True}`. Job kwargs ar
 | Ignored webhook | HTTP 204 |
 | Bad args | `ValueError` |
 | Missing meta | `LookupError` |
-| Bad HMAC / missing secret | `AuthError` |
+| Bad HMAC / missing delivery | `AuthError` / HTTP 401 |
 | At `max_concurrent` | `ConcurrencyLimitError` / HTTP 503 |
 | Delivery in progress | HTTP 503 |
 | `job.wait` timeout | `JobTimeoutError` |
 
 ## Security
 
-Self-hosted runners execute workflow code with access to the runner environment. Treat fork PRs and untrusted workflows as hostile. Prefer private repos or trusted branches before exposing a shared org webhook.
+See [SECURITY.md](SECURITY.md). Short version: HMAC proves the webhook secret, not repo ACL; `repositories` is required; Jobs never see `WEBHOOK_SECRET`; treat fork PRs as hostile; `max_concurrent` is soft.
 
 ## Development
 
@@ -160,7 +163,7 @@ uv run ruff format --check src/runner_modal tests examples
 uv run ty check
 ```
 
-See [`AGENTS.md`](AGENTS.md) for conventions.
+See [`AGENTS.md`](AGENTS.md) for conventions and [`CONTRIBUTING.md`](CONTRIBUTING.md) for PRs.
 
 ## License
 

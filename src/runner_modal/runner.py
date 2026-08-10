@@ -13,57 +13,41 @@ from pathlib import PurePosixPath
 from typing import ClassVar, Self
 
 import modal
-from pydantic import BaseModel, Field
 
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
+from runner_modal.meta import (
+    DEFAULT_RUNNER_VERSION,
+    JOB_KIND,
+    JOB_MODULE,
+    KIND_TAG,
+    META_KEY,
+    POOL_TAG,
+    RunnerInfo,
+    RunnerMeta,
+)
 from runner_modal.profile import StageClock
 from runner_modal.server import SERVER_CLASS_NAME, RunnerServer
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
-META_KEY = "runner"
-KIND_TAG = "runner_modal"
-JOB_KIND = "runner"
-POOL_TAG = "runner_pool"
-DEFAULT_RUNNER_VERSION = "2.336.0"
-JOB_MODULE = "runner_modal.job"
 
 
-class RunnerMeta(BaseModel):
-    """Persisted Runner Dict payload."""
-
-    name: str
-    labels: list[str] = Field(default_factory=list)
-    max_concurrent: int | None = None
-    cache: bool = True
-    app_name: str | None = None
-    server_name: str | None = None
-    # Named Modal Secret from Runner.create (GITHUB_TOKEN + WEBHOOK_SECRET).
-    secret_name: str | None = None
-    # Named Job Sandbox image published at Runner.create (``Image.from_name``).
-    job_image_name: str | None = None
-    github_enterprise_domain: str | None = None
-    # Slim defaults applied by Job.create / webhook when kwargs are omitted.
-    region: str | list[str] | None = None
-    idle_timeout: int | None = None
-    experimental_options: dict[str, object] | None = None
-    runner_group_id: int = 1
+def require_repositories(repositories: Sequence[str]) -> list[str]:
+    if not repositories:
+        raise ValueError("repositories must be a non-empty sequence of 'owner/repo'")
+    out: list[str] = []
+    for repo in repositories:
+        if repo.count("/") != 1:
+            raise ValueError(f"repository must be 'owner/repo', got {repo!r}")
+        out.append(repo)
+    return out
 
 
-class RunnerInfo(BaseModel):
-    """Snapshot from ``Runner.info()`` (like reading Volume/Dict metadata)."""
-
-    model_config = {"frozen": True}
-
-    name: str
-    labels: list[str]
-    max_concurrent: int | None
-    cache: bool
-    active_runners: int
-    app_name: str | None
-    server_name: str | None
-    secret_name: str | None
-    job_image_name: str | None
+def require_named_secret(secret: modal.Secret, *, label: str) -> str:
+    name = secret.name
+    if not name:
+        raise ValueError(f"{label} requires a named Secret (modal.Secret.from_name)")
+    return name
 
 
 class RunnerObjects:
@@ -76,8 +60,9 @@ class RunnerObjects:
         allow_existing: bool = False,
         environment_name: str | None = None,
         labels: Sequence[str] | None = None,
+        repositories: Sequence[str] | None = None,
         max_concurrent: int | None = None,
-        cache: bool = True,
+        cache: bool = False,
         client: modal.Client | None = None,
     ) -> None:
         if not RUNNER_NAME_RE.fullmatch(name):
@@ -100,6 +85,7 @@ class RunnerObjects:
             create_if_missing=True,
             environment_name=environment_name,
             labels=list(labels or []),
+            repositories=list(repositories or []),
             max_concurrent=max_concurrent,
             cache=cache,
             client=client,
@@ -161,8 +147,9 @@ class Runner:
         environment_name: str | None = None,
         create_if_missing: bool = False,
         labels: Sequence[str] | None = None,
+        repositories: Sequence[str] | None = None,
         max_concurrent: int | None = None,
-        cache: bool = True,
+        cache: bool = False,
         client: modal.Client | None = None,
     ) -> None:
         self.name = name
@@ -172,6 +159,7 @@ class Runner:
         self.meta = RunnerMeta(
             name=name,
             labels=list(labels or []),
+            repositories=list(repositories or []),
             max_concurrent=max_concurrent,
             cache=cache,
         )
@@ -227,7 +215,7 @@ class Runner:
             runner: Runner,
             *,
             repository: str,
-            secret: modal.Secret,
+            github_secret: modal.Secret,
             app: modal.App | None = None,
             labels: Sequence[str] | None = None,
             runner_group_id: int | None = None,
@@ -260,9 +248,8 @@ class Runner:
         ) -> Runner.Job:
             """Create a job Sandbox (eager) — same role as ``modal.Sandbox.create``.
 
-            ``secret`` must provide ``GITHUB_TOKEN`` (typically
-            ``Secret.from_name(..., required_keys=["GITHUB_TOKEN"])``). JIT mint
-            runs inside the Sandbox via ``python -m runner_modal.job``.
+            ``github_secret`` must provide ``GITHUB_TOKEN``. JIT mint runs inside
+            the Sandbox via ``python -m runner_modal.job``.
             """
             if repository.count("/") != 1:
                 raise ValueError(f"repository must be 'owner/repo', got {repository!r}")
@@ -307,7 +294,6 @@ class Runner:
                             client=client or runner.client,
                         )
                     else:
-                        # Imperative / objects-only: build from this uv project.
                         image = (
                             Runner.docker_image()
                             if use_docker
@@ -340,10 +326,6 @@ class Runner:
             run_env = dict(env or {})
             run_env.setdefault("RUNNER_ALLOW_RUNASROOT", "1")
             run_env[JOB_SPEC_ENV] = spec.model_dump_json()
-            # Forward so in-job StageClock (jit_mint) matches the Server flag.
-            profile = os.environ.get(StageClock.ENV)
-            if profile and StageClock.ENV not in run_env:
-                run_env[StageClock.ENV] = profile
 
             with StageClock("sandbox_create"):
                 sandbox = modal.Sandbox.create(
@@ -353,7 +335,7 @@ class Runner:
                     app=app,
                     image=image,
                     env=run_env,
-                    secrets=[secret, *(secrets or [])],
+                    secrets=[github_secret, *(secrets or [])],
                     volumes=vol_map,
                     timeout=timeout,
                     idle_timeout=job_idle,
@@ -438,12 +420,7 @@ class Runner:
     def default_image(
         cls, *, runner_version: str = DEFAULT_RUNNER_VERSION
     ) -> modal.Image:
-        """gVisor job image with Actions runner (CPU/GPU).
-
-        Call from the repo root so ``uv_sync()`` sees this uv project.
-        ``uv_sync()`` installs lockfile deps only; ``add_local_python_source``
-        (``copy=True``, last) bakes ``runner_modal`` into the published Image.
-        """
+        """gVisor job image with Actions runner (CPU/GPU)."""
         base = (
             modal.Image.debian_slim(python_version="3.12")
             .apt_install(
@@ -471,7 +448,7 @@ class Runner:
     def docker_image(
         cls, *, runner_version: str = DEFAULT_RUNNER_VERSION
     ) -> modal.Image:
-        """VM job image with dockerd (no GPU). Deploy/run from the repo root."""
+        """VM job image with dockerd (no GPU)."""
         base = (
             modal.Image.from_registry("ubuntu:24.04")
             .env({"DEBIAN_FRONTEND": "noninteractive", "RUNNER_ALLOW_RUNASROOT": "1"})
@@ -501,10 +478,12 @@ class Runner:
         app: modal.App,
         name: str,
         *,
-        secret: modal.Secret,
+        github_secret: modal.Secret,
+        webhook_secret: modal.Secret,
+        repositories: Sequence[str],
         labels: Sequence[str] | None = None,
         max_concurrent: int | None = None,
-        cache: bool = True,
+        cache: bool = False,
         image: modal.Image | None = None,
         volumes: Mapping[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
         | None = None,
@@ -535,19 +514,9 @@ class Runner:
     ) -> Self:
         """Register control plane on ``app`` (definition-time — not a Sandbox).
 
-        Call once per App. Runner ``name`` identifies Dict/Volume state; the Modal
-        Server class is always ``RunnerServer`` (Modal has no Server parameters).
-
-        ``secret`` must be a named Secret (``Secret.from_name``) with
-        ``GITHUB_TOKEN`` and ``WEBHOOK_SECRET``. The name is persisted so the
-        webhook can pass the same Secret into ``Job.create``.
-
-        Job Sandbox images are built and published here as a named Image
-        (``"{name}-job"``) via ``Image.build`` + ``publish``, so the Server can
-        ``Image.from_name`` without reconstructing local ``uv_sync`` mounts.
-
-        ``cache=True`` mounts a shared Volume at ``/cache`` on job Sandboxes — this is
-        not the GitHub Actions cache service (``actions/cache``).
+        Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
+        ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the Server only.
+        ``repositories`` is required — webhook admission is fail-closed.
         """
         if not RUNNER_NAME_RE.fullmatch(name):
             raise ValueError(f"invalid Runner name {name!r}")
@@ -555,17 +524,16 @@ class Runner:
             raise ValueError(
                 "Runner.create requires a named App, e.g. modal.App('acme-ci')"
             )
-        secret_name = secret.name
-        if not secret_name:
-            raise ValueError(
-                "Runner.create requires a named Secret (modal.Secret.from_name)"
-            )
+        repos = require_repositories(repositories)
+        github_name = require_named_secret(github_secret, label="github_secret")
+        webhook_name = require_named_secret(webhook_secret, label="webhook_secret")
 
         runner = cls.from_name(
             name,
             create_if_missing=True,
             environment_name=environment_name,
             labels=labels,
+            repositories=repos,
             max_concurrent=max_concurrent,
             cache=cache,
             client=client,
@@ -601,13 +569,15 @@ class Runner:
         runner.meta = RunnerMeta(
             name=name,
             labels=list(labels) if labels is not None else list(prior.labels),
+            repositories=repos,
             max_concurrent=(
                 max_concurrent if max_concurrent is not None else prior.max_concurrent
             ),
             cache=cache,
             app_name=app.name,
             server_name=SERVER_CLASS_NAME,
-            secret_name=secret_name,
+            github_secret_name=github_name,
+            webhook_secret_name=webhook_name,
             job_image_name=job_image_name,
             github_enterprise_domain=(
                 github_enterprise_domain
@@ -642,7 +612,7 @@ class Runner:
 
         app.server(
             image=image if image is not None else cls.control_plane_image(),
-            secrets=[secret],
+            secrets=[webhook_secret],
             volumes=vol_map,
             env=run_env,
             compute_region=compute_region,
@@ -673,8 +643,9 @@ class Runner:
         environment_name: str | None = None,
         create_if_missing: bool = False,
         labels: Sequence[str] | None = None,
+        repositories: Sequence[str] | None = None,
         max_concurrent: int | None = None,
-        cache: bool = True,
+        cache: bool = False,
         client: modal.Client | None = None,
     ) -> Self:
         """Reference a Runner by name (Volume-shaped; hydrate on first use)."""
@@ -685,6 +656,7 @@ class Runner:
             environment_name=environment_name,
             create_if_missing=create_if_missing,
             labels=labels,
+            repositories=repositories,
             max_concurrent=max_concurrent,
             cache=cache,
             client=client,
@@ -696,8 +668,9 @@ class Runner:
         cls,
         *,
         labels: Sequence[str] | None = None,
+        repositories: Sequence[str] | None = None,
         max_concurrent: int | None = None,
-        cache: bool = True,
+        cache: bool = False,
         client: modal.Client | None = None,
     ) -> Generator[Self, None, None]:
         """Anonymous Runner for the duration of the context (Volume.ephemeral)."""
@@ -706,6 +679,7 @@ class Runner:
             name,
             create_if_missing=True,
             labels=labels,
+            repositories=repositories,
             max_concurrent=max_concurrent,
             cache=cache,
             client=client,
@@ -775,33 +749,46 @@ class Runner:
         self.hydrated = True
 
     def github_secret(self) -> modal.Secret:
-        """Named Secret for Job JIT mint (``GITHUB_TOKEN``)."""
+        """Named Secret for Job JIT mint (``GITHUB_TOKEN`` only)."""
         self.hydrate()
-        if not self.meta.secret_name:
+        if not self.meta.github_secret_name:
             raise LookupError(
-                f"Runner {self.name!r} has no secret_name; "
-                "call Runner.create(secret=...) first"
+                f"Runner {self.name!r} has no github_secret_name; "
+                "call Runner.create(github_secret=...) first"
             )
         return modal.Secret.from_name(
-            self.meta.secret_name,
+            self.meta.github_secret_name,
             required_keys=["GITHUB_TOKEN"],
             environment_name=self.environment_name,
             client=self.client,
         )
 
-    def admits(self, labels: Sequence[str]) -> bool:
-        """Whether webhook labels match this pool (after hydrate)."""
+    def admits(self, labels: Sequence[str], repository: str) -> bool:
+        """Whether webhook labels and repository match this pool (after hydrate)."""
         self.hydrate()
+        allowed = set(self.meta.repositories)
+        if not allowed or repository not in allowed:
+            return False
         pool = set(self.meta.labels)
         job_labels = set(labels)
         return bool(pool) and "self-hosted" in job_labels and pool <= job_labels
 
+    def job_app(self) -> modal.App:
+        """App handle for webhook ``Job.create`` (explicit; no ambient context)."""
+        self.hydrate()
+        if not self.meta.app_name:
+            raise LookupError(
+                f"Runner {self.name!r} has no app_name; call Runner.create(...) first"
+            )
+        return modal.App.lookup(
+            self.meta.app_name,
+            environment_name=self.environment_name,
+            client=self.client,
+        )
+
     @property
     def url(self) -> str | None:
-        """Server URL after deploy, or ``None`` if not ready (like ``Server.get_url``).
-
-        Absence is ``None``; use ``if url is None`` rather than expecting an exception.
-        """
+        """Server URL after deploy, or ``None`` if not ready."""
         self.hydrate()
         if not self.meta.app_name or not self.meta.server_name:
             return None
@@ -823,11 +810,7 @@ class Runner:
         )
 
     def has_capacity(self, *, app_id: str | None = None) -> bool:
-        """Soft LBYL concurrency check (list-then-create; not a reservation).
-
-        ``Job.create`` still raises ``ConcurrencyLimitError`` if full at call time.
-        Concurrent creators can overshoot ``max_concurrent``.
-        """
+        """Soft LBYL concurrency check (list-then-create; not a reservation)."""
         self.hydrate()
         limit = self.meta.max_concurrent
         if limit is None:
@@ -839,11 +822,13 @@ class Runner:
         return RunnerInfo(
             name=self.meta.name,
             labels=list(self.meta.labels),
+            repositories=list(self.meta.repositories),
             max_concurrent=self.meta.max_concurrent,
             cache=self.meta.cache,
             active_runners=self.active_count(app_id=app_id),
             app_name=self.meta.app_name,
             server_name=self.meta.server_name,
-            secret_name=self.meta.secret_name,
+            github_secret_name=self.meta.github_secret_name,
+            webhook_secret_name=self.meta.webhook_secret_name,
             job_image_name=self.meta.job_image_name,
         )
