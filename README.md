@@ -14,19 +14,19 @@ You deploy your own Modal App and Secrets. This is not a managed multi-tenant se
 ## Quick start
 
 ```bash
-uv sync
+uv add git+https://github.com/modal-projects/runner-modal
 
 modal secret create github-token GITHUB_TOKEN=ghp_xxx
 modal secret create github-webhook WEBHOOK_SECRET=$(openssl rand -hex 32)
-
-modal deploy examples/github_webhook.py
 ```
+
+Not on PyPI yet — install from the GitHub repo. Then put this in e.g. `app.py` and `modal deploy app.py`:
 
 ```python
 import modal
 from runner_modal import Runner
 
-app = modal.App("runner-modal-ci-app")
+app = modal.App("my-runners")
 github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 webhook = modal.Secret.from_name("github-webhook", required_keys=["WEBHOOK_SECRET"])
 
@@ -35,7 +35,7 @@ Runner.create(
     name="ci",
     github_secret=github,
     webhook_secret=webhook,
-    repositories=["modal-projects/runner-modal"],
+    repositories=["YOUR_ORG/YOUR_REPO"],
     compute_region="us-east",
     labels=["self-hosted", "modal", "ci"],
     max_concurrent=20,
@@ -57,7 +57,7 @@ runs-on:
   - job-${{ github.run_id }}-${{ github.job }}
 ```
 
-One `Runner.create` per App. It publishes named Image `{name}-job`. Include every pool label plus a unique pin so one runner maps to one job. Use `min_containers=0` to keep the App deployed while scaling the control plane to zero when idle.
+One `Runner.create` per App. It publishes named Image `{name}-job` (package installed from GitHub into the image). Include every pool label plus a unique pin so one runner maps to one job. Use `min_containers=0` to keep the App deployed while scaling the control plane to zero when idle.
 
 | Key | Secret | Mounted on | Purpose |
 |-----|--------|------------|---------|
@@ -118,7 +118,7 @@ github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
 
 job = Runner.Job.create(
     runner,
-    repository="modal-projects/runner-modal",
+    repository="YOUR_ORG/YOUR_REPO",
     labels=["modal", "ci", "job-1"],
     github_secret=github,
     gpu="t4",

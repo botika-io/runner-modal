@@ -61,7 +61,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 ## Layout, images, tests
 
 - Modules by responsibility: `runner` / `meta` / `job` / `api` / `server` / `exceptions`. Keep nested `Job` if it matches the Modal twin; extract collaborators if `runner.py` grows further.
-- Images: control plane builds on deploy (`control_plane_image`: `uv_sync` + `add_local_python_source`). Job Sandboxes use a **named Image** (`"{name}-job"`): `Runner.create` does `Image.build(App.lookup(...)).publish(...)` from the repo root; webhook `Job.create` uses `Image.from_name` only. Do not use `uv_pip_install("runner-modal")` until published. No Path / `add_local_dir` for package install.
+- Images: control plane and job images install the library with ``uv_pip_install`` from GitHub (``PACKAGE_GIT`` in ``meta.py``) until PyPI. Named Job Image ``"{name}-job"`` is still published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name`` only. No Path / ``add_local_dir`` for package install.
 - Default `cache=False`. Shared `/cache` Volume is same-pool only — not Actions cache.
 - One unit test file per impl file (`test_runner.py`, `test_job.py`, `test_api.py`, `test_server.py`, `test_exceptions.py`).
 - Test HMAC failure, delivery claim, admission (repo + labels), and capacity semantics — not only exports / signatures.
@@ -92,7 +92,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 - Optimize from measured profile data only; do not infer bottlenecks. Prefer general, non-overfit changes that keep functionality — no micro-hack opts.
 - README perf content: Python-generated charts for general CI-runner metrics people care about (including vs GitHub Actions when relevant); do not overfit the README to a single profile run. Use the readme skill when revamping READMEs. Keep README concise; no em dashes.
-- Create repos under `modal-projects` as `internal` (never `--public`); treat public creation as a mistake to prevent.
+- Create experimental scratch repos under `modal-projects` as `internal` by default. `runner-modal` itself is intended to be public OSS.
 - Keep the webhook control plane on Modal Server (`RunnerServer`); do not migrate it to Functions/`asgi_app` unless evidence clearly outweighs the warm concurrent spawn twin.
 - After dogfood or profiling sessions, stop/remove Modal apps, Sandboxes, and leftover GitHub self-hosted runners you spun up.
 - Operator-deployed library (each user deploys themselves), not a managed multi-tenant SaaS; no backward compatibility required for the OSS revamp.

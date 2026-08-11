@@ -5,7 +5,7 @@ Setup (two Secrets — never co-mount WEBHOOK_SECRET into Jobs):
   modal secret create github-token GITHUB_TOKEN=ghp_xxx
   modal secret create github-webhook WEBHOOK_SECRET=$(openssl rand -hex 32)
 
-  # from the repo root (uv project — builds/publishes named job image):
+  # deploy from a project that depends on runner-modal (Images install from GitHub):
   modal deploy examples/github_webhook.py
 
 Webhook: ``{runner.url}/github``

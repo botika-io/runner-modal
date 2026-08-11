@@ -22,6 +22,7 @@ from runner_modal.meta import (
     JOB_MODULE,
     KIND_TAG,
     META_KEY,
+    PACKAGE_GIT,
     POOL_TAG,
     RunnerInfo,
     RunnerMeta,
@@ -376,11 +377,11 @@ class Runner:
 
     @classmethod
     def control_plane_image(cls) -> modal.Image:
-        """Server image — uv project deps + local ``runner_modal`` (repo root)."""
+        """Server image — install ``runner-modal`` from GitHub (until PyPI)."""
         return (
             modal.Image.debian_slim(python_version="3.12")
-            .uv_sync()
-            .add_local_python_source("runner_modal")
+            .apt_install("git")
+            .uv_pip_install(PACKAGE_GIT)
         )
 
     @classmethod
@@ -416,15 +417,10 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_sync()
+            .uv_pip_install(PACKAGE_GIT)
             .env({"RUNNER_ALLOW_RUNASROOT": "1"})
         )
-        return cls.install_actions_runner(
-            base, runner_version=runner_version
-        ).add_local_python_source(
-            "runner_modal",
-            copy=True,
-        )
+        return cls.install_actions_runner(base, runner_version=runner_version)
 
     @classmethod
     def docker_image(
@@ -445,14 +441,9 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_sync()
+            .uv_pip_install(PACKAGE_GIT)
         )
-        return cls.install_actions_runner(
-            base, runner_version=runner_version
-        ).add_local_python_source(
-            "runner_modal",
-            copy=True,
-        )
+        return cls.install_actions_runner(base, runner_version=runner_version)
 
     @classmethod
     def create(

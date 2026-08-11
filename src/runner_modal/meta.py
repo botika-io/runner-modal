@@ -10,6 +10,8 @@ JOB_KIND = "runner"
 POOL_TAG = "runner_pool"
 DEFAULT_RUNNER_VERSION = "2.336.0"
 JOB_MODULE = "runner_modal.job"
+# Install path for Images until the package is on PyPI.
+PACKAGE_GIT = "git+https://github.com/modal-projects/runner-modal.git"
 
 
 class RunnerMeta(BaseModel):
