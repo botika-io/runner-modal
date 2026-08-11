@@ -12,9 +12,9 @@ from runner_modal.meta import (
 )
 
 
-def test_package_spec_pins_git_main_until_release() -> None:
+def test_package_spec_pins_release_tag() -> None:
     assert PACKAGE_VERSION == "0.1.0"
-    assert PACKAGE_SPEC.endswith("@main")
+    assert PACKAGE_SPEC.endswith("@v0.1.0")
     assert "runner-modal.git" in PACKAGE_SPEC
 
 

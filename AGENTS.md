@@ -43,7 +43,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 ## Errors, HTTP, secrets
 
-- Soft absence → `None` or HTTP 204 (e.g. undeployed `url`, ignored webhook). Failures raise a small set: `ValueError`, `LookupError`, `AuthError`, `ConcurrencyLimitError`, `JobTimeoutError`. Base `RunnerError` is rare.
+- Soft absence → `None` or HTTP 204 (e.g. undeployed `url`, ignored webhook). Failures raise a small set: `ValueError`, `LookupError`, `AuthError`, `ConcurrencyLimitError`. Base `RunnerError` is rare.
 - Do not wrap Modal / httpx failures in `RunnerError`. Propagate; map only product/auth cases.
 - FastAPI: HTTP status conveys success. Response models without `ok: bool`. Use `HTTPException` for 401 / 400 / 503.
 - Sync I/O (Modal SDK, httpx): use sync `def` endpoints or `asyncio.to_thread`. Never block `async def` handlers with sync Modal/httpx calls.

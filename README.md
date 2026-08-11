@@ -14,11 +14,8 @@ You deploy your own Modal App and Secrets. This is not a managed multi-tenant se
 
 ### 1. Install
 
-Until a PyPI release, install from GitHub (prefer a tag once one exists):
-
 ```bash
-uv add git+https://github.com/modal-projects/runner-modal.git@main
-# after first release: …runner-modal.git@v0.1.0
+uv add git+https://github.com/modal-projects/runner-modal.git@v0.1.0
 ```
 
 Deploy from a checkout (or editable install) so Modal Image builds can

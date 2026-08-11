@@ -19,7 +19,7 @@ PACKAGE_VERSION = "0.1.0"
 # Documented install pin for operators (`uv add …`). Image builds install
 # runtime deps from PyPI and bake local ``runner_modal`` via
 # ``add_local_python_source`` until a PyPI release.
-PACKAGE_SPEC = "git+https://github.com/modal-projects/runner-modal.git@main"
+PACKAGE_SPEC = "git+https://github.com/modal-projects/runner-modal.git@v0.1.0"
 CONTROL_PLANE_DEPS = (
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
