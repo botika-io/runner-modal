@@ -13,12 +13,12 @@ DEFAULT_RUNNER_VERSION = "2.336.0"
 DEFAULT_RUNNER_SHA256 = (
     "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
 )
-JOB_MODULE = "runner_modal.job"
+JOB_MODULE = "runner_modal.entrypoint"
 WEBHOOK_FUNCTION = "webhook"
 PACKAGE_VERSION = "0.1.0"
 # Documented install pin for operators (`uv add …`). Image builds install
 # runtime deps from PyPI and bake local ``runner_modal`` via
-# ``add_local_python_source`` until the package is public.
+# ``add_local_python_source`` until a PyPI release.
 PACKAGE_SPEC = "git+https://github.com/modal-projects/runner-modal.git@main"
 CONTROL_PLANE_DEPS = (
     "fastapi>=0.115.0",

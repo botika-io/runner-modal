@@ -1,4 +1,4 @@
-"""Tests for runner_modal.job — Sandbox entrypoint behavior."""
+"""Tests for runner_modal.entrypoint — Sandbox entrypoint behavior."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from runner_modal.entrypoint import ACTIONS_RUNNER, JOB_SPEC_ENV, JobSpec
 from runner_modal.exceptions import AuthError
-from runner_modal.job import ACTIONS_RUNNER, JOB_SPEC_ENV, JobSpec
 
 
 def test_job_spec_roundtrips_json() -> None:
@@ -40,7 +40,7 @@ def test_start_execs_actions_runner_with_jit() -> None:
     spec = JobSpec(repository="a/b", labels=["modal"], runner_name="r1")
     with (
         patch.object(JobSpec, "mint_jitconfig", return_value="JIT") as mint,
-        patch("runner_modal.job.os.execv") as execv,
+        patch("runner_modal.entrypoint.os.execv") as execv,
     ):
         spec.start(token="t")
         mint.assert_called_once_with(token="t")
@@ -56,7 +56,7 @@ def test_start_boots_docker_when_vm_runtime_requested() -> None:
     with (
         patch.object(JobSpec, "boot_docker") as boot,
         patch.object(JobSpec, "mint_jitconfig", return_value="JIT"),
-        patch("runner_modal.job.os.execv"),
+        patch("runner_modal.entrypoint.os.execv"),
     ):
         spec.start(token="t")
         boot.assert_called_once()
@@ -80,7 +80,7 @@ def test_mint_returns_encoded_jit_from_github() -> None:
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"encoded_jit_config": "ENC"}
-    with patch("runner_modal.job.httpx.post", return_value=resp) as post:
+    with patch("runner_modal.entrypoint.httpx.post", return_value=resp) as post:
         assert spec.mint_jitconfig(token="tok") == "ENC"
         url = post.call_args.args[0]
         assert url.endswith("/repos/acme/api/actions/runners/generate-jitconfig")
@@ -92,7 +92,7 @@ def test_mint_maps_401_to_auth_error() -> None:
     resp = MagicMock()
     resp.status_code = 401
     with (
-        patch("runner_modal.job.httpx.post", return_value=resp),
+        patch("runner_modal.entrypoint.httpx.post", return_value=resp),
         pytest.raises(AuthError, match="401"),
     ):
         spec.mint_jitconfig(token="tok")

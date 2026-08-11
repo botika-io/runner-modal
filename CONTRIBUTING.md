@@ -18,4 +18,4 @@ See [AGENTS.md](AGENTS.md): entity-based public DX (`Runner` / `Runner.Job`), no
 
 - Prefer small PRs with tests for security and race paths (HMAC, delivery claim, admission), not only export/signature checks.
 - Do not add process-local registries, `ok: bool` response fields, or co-mounted webhook + GitHub secrets.
-- Temporary profiling / dogfood harnesses stay out of product PRs.
+- Temporary profiling harnesses (`scripts/`) stay out of library PRs.

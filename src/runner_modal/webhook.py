@@ -21,8 +21,6 @@ from runner_modal.exceptions import AuthError, ConcurrencyLimitError
 from runner_modal.runner import Runner
 
 PENDING_TTL_SECONDS = 15 * 60
-BIND_ATTEMPTS = 5
-BIND_RETRY_SECONDS = 0.05
 OUTCOME_HEADER = "X-Runner-Modal-Outcome"
 REASON_HEADER = "X-Runner-Modal-Reason"
 
@@ -160,12 +158,12 @@ class DeliveryStore:
         except ValidationError:
             return None
 
-    def try_claim(self, delivery_id: str) -> DeliveryRecord | None:
+    def claim(self, delivery_id: str) -> DeliveryRecord | None:
         """Claim ``delivery_id``. Returns ``None`` if this caller won.
 
-        If the key already exists, returns the existing record.
-        Stale pending without ``object_id`` older than ``PENDING_TTL_SECONDS``
-        may be deleted and reclaimed. Pending with ``object_id`` is never reclaimed.
+        Existing keys return the stored record. Stale pending without
+        ``object_id`` is overwritten in place. Rows with ``object_id`` are
+        never reclaimed.
         """
         existing = self.get(delivery_id)
         if existing is not None:
@@ -175,9 +173,10 @@ class DeliveryStore:
                 existing.status == "pending"
                 and time.time() - existing.ts > PENDING_TTL_SECONDS
             ):
-                del self.store[delivery_id]
-            else:
-                return existing
+                pending = DeliveryRecord(status="pending", ts=time.time())
+                self.store[delivery_id] = pending.model_dump(mode="json")
+                return None
+            return existing
 
         pending = DeliveryRecord(status="pending", ts=time.time())
         written = self.store.put(
@@ -189,31 +188,12 @@ class DeliveryStore:
             return None
         return self.get(delivery_id)
 
-    def bind_object(self, delivery_id: str, object_id: str) -> None:
+    def bind(self, delivery_id: str, object_id: str) -> None:
         self.store[delivery_id] = DeliveryRecord(
             status="pending",
             ts=time.time(),
             object_id=object_id,
         ).model_dump(mode="json")
-
-    def bind_object_durable(self, delivery_id: str, object_id: str) -> None:
-        """Write and verify ``object_id`` so TTL reclaim cannot double-spawn."""
-        last_error: Exception | None = None
-        for attempt in range(BIND_ATTEMPTS):
-            try:
-                self.bind_object(delivery_id, object_id)
-                record = self.get(delivery_id)
-                if record is not None and record.object_id == object_id:
-                    return
-                last_error = RuntimeError(
-                    f"delivery {delivery_id!r} bind not durable after write"
-                )
-            except Exception as e:
-                last_error = e
-            if attempt + 1 < BIND_ATTEMPTS:
-                time.sleep(BIND_RETRY_SECONDS)
-        assert last_error is not None
-        raise last_error
 
     def mark_done(self, delivery_id: str, object_id: str) -> None:
         record = DeliveryRecord(status="done", ts=time.time(), object_id=object_id)
@@ -328,7 +308,16 @@ class WebhookApp:
             return self.ignore(reason)
 
         if event.action == "cancelled":
-            self.terminate_job(runner, event.job_id)
+            runner.hydrate()
+            app_name = runner.meta.app_name
+            if app_name:
+                with contextlib.suppress(LookupError, modal.exception.NotFoundError):
+                    Runner.Job.from_name(
+                        app_name,
+                        f"job-{event.job_id}",
+                        environment_name=runner.environment_name,
+                        client=runner.client,
+                    ).terminate()
             log.info(
                 "webhook cancelled runner=%s delivery=%s job_id=%s",
                 self.runner_name,
@@ -340,7 +329,7 @@ class WebhookApp:
                 headers=self.outcome("cancelled"),
             )
 
-        existing = self.deliveries.try_claim(event.delivery_id)
+        existing = self.deliveries.claim(event.delivery_id)
         if existing is not None:
             if existing.object_id:
                 log.info(
@@ -386,8 +375,19 @@ class WebhookApp:
                 headers=self.outcome("capacity"),
             ) from e
         except modal.exception.AlreadyExistsError:
-            job = self.job_from_name(runner, job_name)
-            if job is None:
+            runner.hydrate()
+            app_name = runner.meta.app_name
+            if not app_name:
+                self.deliveries.release(event.delivery_id)
+                raise
+            try:
+                job = Runner.Job.from_name(
+                    app_name,
+                    job_name,
+                    environment_name=runner.environment_name,
+                    client=runner.client,
+                )
+            except (LookupError, modal.exception.NotFoundError):
                 self.deliveries.release(event.delivery_id)
                 raise
         except Exception:
@@ -395,15 +395,19 @@ class WebhookApp:
             raise
 
         try:
-            self.deliveries.bind_object_durable(event.delivery_id, job.object_id)
+            self.deliveries.bind(event.delivery_id, job.object_id)
         except Exception:
+            terminated = False
             with contextlib.suppress(Exception):
                 job.terminate()
-            self.deliveries.release(event.delivery_id)
+                terminated = True
+            if terminated:
+                self.deliveries.release(event.delivery_id)
             log.info(
-                "webhook bind_failed runner=%s delivery=%s",
+                "webhook bind_failed runner=%s delivery=%s terminated=%s",
                 self.runner_name,
                 event.delivery_id,
+                terminated,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -425,23 +429,3 @@ class WebhookApp:
                 name=job_name,
             )
         )
-
-    def job_from_name(self, runner: Runner, job_name: str) -> Runner.Job | None:
-        runner.hydrate()
-        app_name = runner.meta.app_name
-        if not app_name:
-            return None
-        try:
-            return Runner.Job.from_name(
-                app_name,
-                job_name,
-                environment_name=runner.environment_name,
-                client=runner.client,
-            )
-        except (LookupError, modal.exception.NotFoundError):
-            return None
-
-    def terminate_job(self, runner: Runner, job_id: int) -> None:
-        job = self.job_from_name(runner, f"job-{job_id}")
-        if job is not None:
-            job.terminate()

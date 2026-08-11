@@ -1,6 +1,6 @@
 # Security
 
-`runner-modal` is an **operator-deployed** library. You run it in your Modal workspace with your GitHub credentials. It is not a managed multi-tenant service and does not isolate customers from each other.
+`runner-modal` is an **operator-deployed** library. You run it in your Modal workspace with your GitHub credentials. It is not a managed multi-tenant service and does not provide multi-tenant isolation across Modal workspaces or GitHub orgs; you operate one deployment in your account.
 
 ## Trust model
 
@@ -41,7 +41,7 @@ Prefer a fine-scoped GitHub App or PAT limited to runner JIT / admin on the allo
 
 ## Delivery bind
 
-After a Job Sandbox is created, the control plane durable-binds `object_id` onto the delivery claim before HTTP 200. Pending claims **with** `object_id` are never TTL-reclaimed. If bind cannot be made durable, the Job is terminated, the unbound claim is released, and GitHub receives HTTP 503 so it can retry.
+After a Job Sandbox is created, the control plane binds `object_id` onto the delivery claim before HTTP 200. Pending claims **with** `object_id` are never TTL-reclaimed. If bind fails, the Job is terminated when possible; the claim is released only after a confirmed terminate. Otherwise the claim is left in place and GitHub receives HTTP 503. Redeploying `Runner.create` overwrites Runner meta (last deploy wins).
 
 ## Fork PRs and untrusted workflows
 
@@ -49,4 +49,4 @@ Self-hosted runners execute workflow steps with access to the Job environment (i
 
 ## Reporting issues
 
-Open a private security report via GitHub Security Advisories on this repository when available, or contact the maintainers listed in the repo.
+Please use [GitHub Security Advisories](https://github.com/modal-projects/runner-modal/security/advisories/new) for this repository. Do not open public issues for undisclosed vulnerabilities.

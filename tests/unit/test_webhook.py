@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +26,28 @@ from runner_modal.webhook import (
 POOL_LABELS = ["self-hosted", "modal", "acme"]
 REPO = "acme/api"
 HOOK = "hook"
+
+
+class MemoryDict:
+    """In-memory stand-in for ``modal.Dict`` claim/bind semantics."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+
+    def get(self, key: str) -> Any | None:
+        return self.data.get(key)
+
+    def put(self, key: str, value: Any, *, skip_if_exists: bool = False) -> bool:
+        if skip_if_exists and key in self.data:
+            return False
+        self.data[key] = value
+        return True
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.data[key]
 
 
 def test_hmac_rejects_wrong_secret() -> None:
@@ -162,53 +185,136 @@ def test_event_parses_form_urlencoded_github_payload() -> None:
     assert event.delivery_id == "d-form"
 
 
-def test_try_claim_reclaims_stale_pending_without_object_id() -> None:
-    store = MagicMock()
-    stale = DeliveryRecord(
+def test_claim_overwrites_stale_pending_without_object_id() -> None:
+    with patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()):
+        deliveries = DeliveryStore("acme")
+    deliveries.store["d-stale"] = DeliveryRecord(
         status="pending", ts=time.time() - PENDING_TTL_SECONDS - 1
     ).model_dump(mode="json")
-    store.get.side_effect = [stale, None]
-    store.put.return_value = True
-    deliveries = DeliveryStore.__new__(DeliveryStore)
-    deliveries.store = store
 
-    assert deliveries.try_claim("d-stale") is None
-    store.__delitem__.assert_called()
-    store.put.assert_called_once()
+    assert deliveries.claim("d-stale") is None
+    record = deliveries.get("d-stale")
+    assert record is not None
+    assert record.status == "pending"
+    assert record.object_id is None
+    assert time.time() - record.ts < 5
 
 
-def test_try_claim_never_reclaims_pending_with_object_id() -> None:
-    store = MagicMock()
-    pending = DeliveryRecord(
+def test_claim_never_reclaims_pending_with_object_id() -> None:
+    with patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()):
+        deliveries = DeliveryStore("acme")
+    deliveries.store["d-bound"] = DeliveryRecord(
         status="pending",
         ts=time.time() - PENDING_TTL_SECONDS - 1,
         object_id="sb-bound",
     ).model_dump(mode="json")
-    store.get.return_value = pending
-    deliveries = DeliveryStore.__new__(DeliveryStore)
-    deliveries.store = store
 
-    got = deliveries.try_claim("d-bound")
+    got = deliveries.claim("d-bound")
     assert got is not None
     assert got.object_id == "sb-bound"
-    store.__delitem__.assert_not_called()
-    store.put.assert_not_called()
+    assert deliveries.get("d-bound") is not None
+    assert deliveries.get("d-bound").object_id == "sb-bound"  # type: ignore[union-attr]
 
 
-def test_bind_object_durable_retries_until_verified() -> None:
-    store = MagicMock()
-    deliveries = DeliveryStore.__new__(DeliveryStore)
-    deliveries.store = store
-    bound = DeliveryRecord(
-        status="pending", ts=time.time(), object_id="sb-1"
-    ).model_dump(mode="json")
-    store.get.side_effect = [None, bound]
+def test_claim_put_skip_if_exists_returns_existing() -> None:
+    with patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()):
+        deliveries = DeliveryStore("acme")
+    assert deliveries.claim("d-new") is None
+    again = deliveries.claim("d-new")
+    assert again is not None
+    assert again.status == "pending"
+    assert again.object_id is None
 
-    with patch("runner_modal.webhook.time.sleep"):
-        deliveries.bind_object_durable("d1", "sb-1")
 
-    assert store.__setitem__.call_count >= 1
-    assert store.get.call_count == 2
+def test_release_only_while_pending_unbound() -> None:
+    with patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()):
+        deliveries = DeliveryStore("acme")
+    deliveries.claim("d1")
+    deliveries.release("d1")
+    assert deliveries.get("d1") is None
+
+    deliveries.claim("d2")
+    deliveries.bind("d2", "sb-1")
+    deliveries.release("d2")
+    assert deliveries.get("d2") is not None
+    assert deliveries.get("d2").object_id == "sb-1"  # type: ignore[union-attr]
+
+
+def test_bind_failure_releases_only_when_terminate_succeeds() -> None:
+    body = json.dumps(
+        {
+            "action": "queued",
+            "workflow_job": {
+                "id": 42,
+                "run_id": 1,
+                "labels": list(POOL_LABELS),
+            },
+            "repository": {"full_name": REPO},
+        }
+    ).encode()
+    fake_job = MagicMock()
+    fake_job.object_id = "sb-ok"
+    runner = Runner.from_name("acme", labels=POOL_LABELS, repositories=[REPO])
+    runner.meta = RunnerMeta(
+        name="acme",
+        labels=list(POOL_LABELS),
+        repositories=[REPO],
+        app_name="acme-ci",
+        github_secret_name="github-token",
+        webhook_secret_name="github-webhook",
+    )
+    with (
+        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch.object(DeliveryStore, "claim", return_value=None),
+        patch.object(DeliveryStore, "bind", side_effect=RuntimeError("dict down")),
+        patch.object(DeliveryStore, "release") as release,
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "github_secret", return_value=MagicMock()),
+        patch.object(runner, "job_app", return_value=MagicMock()),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
+    ):
+        fake_job.terminate.side_effect = RuntimeError("terminate failed")
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+            "/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "workflow_job",
+                "X-GitHub-Delivery": "d",
+                "X-Hub-Signature-256": "sha256="
+                + hmac.new(HOOK.encode(), body, hashlib.sha256).hexdigest(),
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 503
+        release.assert_not_called()
+
+    with (
+        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch.object(DeliveryStore, "claim", return_value=None),
+        patch.object(DeliveryStore, "bind", side_effect=RuntimeError("dict down")),
+        patch.object(DeliveryStore, "release") as release,
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "github_secret", return_value=MagicMock()),
+        patch.object(runner, "job_app", return_value=MagicMock()),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
+    ):
+        fake_job.terminate.side_effect = None
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+            "/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "workflow_job",
+                "X-GitHub-Delivery": "d2",
+                "X-Hub-Signature-256": "sha256="
+                + hmac.new(HOOK.encode(), body, hashlib.sha256).hexdigest(),
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 503
+        fake_job.terminate.assert_called()
+        release.assert_called_once_with("d2")
 
 
 def test_queued_job_accepted_with_object_id() -> None:
@@ -239,8 +345,8 @@ def test_queued_job_accepted_with_object_id() -> None:
 
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=None),
-        patch.object(DeliveryStore, "bind_object_durable") as bind,
+        patch.object(DeliveryStore, "claim", return_value=None),
+        patch.object(DeliveryStore, "bind") as bind,
         patch.object(DeliveryStore, "mark_done") as mark_done,
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=gh),
@@ -524,7 +630,7 @@ def test_cancelled_terminates_matching_job() -> None:
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
-        patch.object(WebhookApp, "job_from_name", return_value=job),
+        patch("runner_modal.webhook.Runner.Job.from_name", return_value=job),
     ):
         resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
@@ -567,7 +673,7 @@ def test_cancelled_skips_repo_mismatch() -> None:
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
-        patch.object(WebhookApp, "terminate_job") as terminate,
+        patch("runner_modal.webhook.Runner.Job.from_name") as from_name,
     ):
         resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
@@ -582,7 +688,7 @@ def test_cancelled_skips_repo_mismatch() -> None:
         )
         assert resp.status_code == 204
         assert resp.headers.get("X-Runner-Modal-Reason") == "repository_mismatch"
-        terminate.assert_not_called()
+        from_name.assert_not_called()
 
 
 def test_duplicate_delivery_returns_existing_object_id() -> None:
@@ -609,7 +715,7 @@ def test_duplicate_delivery_returns_existing_object_id() -> None:
     )
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=done),
+        patch.object(DeliveryStore, "claim", return_value=done),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
@@ -655,7 +761,7 @@ def test_in_flight_delivery_returns_503() -> None:
     )
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=pending),
+        patch.object(DeliveryStore, "claim", return_value=pending),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
     ):
@@ -698,7 +804,7 @@ def test_capacity_full_releases_claim_and_returns_503() -> None:
     )
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=None),
+        patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=MagicMock()),
@@ -748,7 +854,7 @@ def test_create_failure_releases_claim() -> None:
     )
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=None),
+        patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "mark_done") as mark_done,
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
@@ -804,8 +910,8 @@ def test_mark_done_failure_after_bind_still_accepts() -> None:
     )
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=None),
-        patch.object(DeliveryStore, "bind_object_durable"),
+        patch.object(DeliveryStore, "claim", return_value=None),
+        patch.object(DeliveryStore, "bind"),
         patch.object(DeliveryStore, "mark_done", side_effect=RuntimeError("dict")),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
@@ -828,61 +934,6 @@ def test_mark_done_failure_after_bind_still_accepts() -> None:
         assert resp.status_code == 200
         assert resp.json()["object_id"] == "sb-ok"
         release.assert_not_called()
-
-
-def test_bind_failure_terminates_job_releases_and_returns_503() -> None:
-    body = json.dumps(
-        {
-            "action": "queued",
-            "workflow_job": {
-                "id": 42,
-                "run_id": 1,
-                "labels": list(POOL_LABELS),
-            },
-            "repository": {"full_name": REPO},
-        }
-    ).encode()
-    fake_job = MagicMock()
-    fake_job.object_id = "sb-ok"
-    runner = Runner.from_name("acme", labels=POOL_LABELS, repositories=[REPO])
-    runner.meta = RunnerMeta(
-        name="acme",
-        labels=list(POOL_LABELS),
-        repositories=[REPO],
-        app_name="acme-ci",
-        github_secret_name="github-token",
-        webhook_secret_name="github-webhook",
-    )
-    with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
-        patch.object(DeliveryStore, "try_claim", return_value=None),
-        patch.object(
-            DeliveryStore,
-            "bind_object_durable",
-            side_effect=RuntimeError("dict down"),
-        ),
-        patch.object(DeliveryStore, "release") as release,
-        patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
-        patch.object(runner, "job_app", return_value=MagicMock()),
-        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
-        patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
-    ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
-            "/github",
-            content=body,
-            headers={
-                "X-GitHub-Event": "workflow_job",
-                "X-GitHub-Delivery": "d",
-                "X-Hub-Signature-256": "sha256="
-                + hmac.new(HOOK.encode(), body, hashlib.sha256).hexdigest(),
-                "Content-Type": "application/json",
-            },
-        )
-        assert resp.status_code == 503
-        assert resp.headers.get("X-Runner-Modal-Outcome") == "bind_failed"
-        fake_job.terminate.assert_called_once()
-        release.assert_called_once()
 
 
 def test_health_reports_labels_and_concurrency() -> None:

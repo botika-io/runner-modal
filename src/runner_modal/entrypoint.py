@@ -1,6 +1,6 @@
 """Job Sandbox entrypoint — mint JIT from Secret, run Actions runner.
 
-``python -m runner_modal.job``
+``python -m runner_modal.entrypoint``
 
 - ``GITHUB_TOKEN`` — from Modal Secret (required)
 - ``RUNNER_JOB_SPEC`` — JSON ``JobSpec`` (required)
@@ -37,7 +37,7 @@ class JitResponse(BaseModel):
 
 
 class JobSpec(BaseModel):
-    """Non-secret inputs for ``python -m runner_modal.job``."""
+    """Non-secret inputs for ``python -m runner_modal.entrypoint``."""
 
     model_config = ConfigDict(frozen=True)
 
