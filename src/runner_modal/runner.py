@@ -17,20 +17,23 @@ import modal
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
 from runner_modal.meta import (
+    CONTROL_PLANE_DEPS,
     DEFAULT_RUNNER_SHA256,
     DEFAULT_RUNNER_VERSION,
+    JOB_DEPS,
     JOB_KIND,
     JOB_MODULE,
     KIND_TAG,
     META_KEY,
-    PACKAGE_SPEC,
     POOL_TAG,
+    WEBHOOK_FUNCTION,
     RunnerInfo,
     RunnerMeta,
 )
-from runner_modal.server import SERVER_CLASS_NAME, RunnerServer
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
+WEBHOOK_TIMEOUT_SECONDS = 300
+WEBHOOK_MAX_INPUTS = 64
 
 
 class RunnerObjects:
@@ -116,7 +119,7 @@ class RunnerObjects:
 
 
 class Runner:
-    """Named CI runner — Volume-shaped lookup + App Server registration.
+    """Named CI runner — Volume-shaped lookup + ASGI webhook registration.
 
     ``Runner.create(app, name, …)`` registers the control plane
     (definition-time). ``Runner.Job.create(runner, …)`` starts a job
@@ -376,8 +379,8 @@ class Runner:
     def control_plane_image(cls) -> modal.Image:
         return (
             modal.Image.debian_slim(python_version="3.12")
-            .apt_install("git")
-            .uv_pip_install(PACKAGE_SPEC)
+            .uv_pip_install(*CONTROL_PLANE_DEPS)
+            .add_local_python_source("runner_modal", copy=True)
         )
 
     @classmethod
@@ -417,7 +420,8 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_pip_install(PACKAGE_SPEC)
+            .uv_pip_install(*JOB_DEPS)
+            .add_local_python_source("runner_modal", copy=True)
             .env({"RUNNER_ALLOW_RUNASROOT": "1"})
         )
         return cls.install_actions_runner(base, runner_version=runner_version)
@@ -440,7 +444,8 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_pip_install(PACKAGE_SPEC)
+            .uv_pip_install(*JOB_DEPS)
+            .add_local_python_source("runner_modal", copy=True)
         )
         return cls.install_actions_runner(base, runner_version=runner_version)
 
@@ -460,21 +465,14 @@ class Runner:
         volumes: Mapping[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
         | None = None,
         env: dict[str, str | None] | None = None,
-        compute_region: str | Sequence[str] | None = None,
-        routing_region: str = "us-east",
+        region: str | Sequence[str] | None = None,
         cloud: str | None = None,
         min_containers: int = 0,
         max_containers: int | None = None,
-        unauthenticated: bool = True,
-        gpu: str | None = None,
-        cpu: float | None = None,
-        memory: int | None = None,
-        target_concurrency: int | None = None,
-        buffer_containers: int | None = None,
-        scaleup_window: int | None = None,
+        buffer_containers: int = 1,
         scaledown_window: int | None = None,
-        startup_timeout: int = 30,
-        port: int = 8000,
+        timeout: int = WEBHOOK_TIMEOUT_SECONDS,
+        startup_timeout: int | None = None,
         ephemeral_disk: int | None = None,
         proxy: modal.Proxy | None = None,
         environment_name: str | None = None,
@@ -483,15 +481,18 @@ class Runner:
         experimental_options: dict[str, object] | None = None,
         runner_group_id: int | None = None,
         github_enterprise_domain: str | None = None,
+        # Job Sandbox defaults (not control-plane sizing).
+        gpu: str | None = None,
+        cpu: float | None = None,
+        memory: int | None = None,
     ) -> Self:
-        """Register control plane on ``app`` (definition-time — not a Sandbox).
+        """Register ASGI webhook Function on ``app`` (definition-time).
 
         Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
-        ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the Server only.
+        ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the webhook Function only.
         ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
-        ``cpu`` / ``memory`` / ``gpu`` are default Job Sandbox resources (one pool =
-        one resource profile). The control-plane Server uses fixed small sizing.
-        ``min_containers`` defaults to ``0`` (scale-to-zero control plane).
+        ``cpu`` / ``memory`` / ``gpu`` are default Job Sandbox resources.
+        ``min_containers`` defaults to ``0``; ``buffer_containers`` defaults to ``1``.
         """
         if not RUNNER_NAME_RE.fullmatch(name):
             raise ValueError(f"invalid Runner name {name!r}")
@@ -535,12 +536,12 @@ class Runner:
         )
         runner.hydrate()
         prior = runner.meta
-        if compute_region is None:
+        if region is None:
             region_default: str | list[str] | None = prior.region
-        elif isinstance(compute_region, str):
-            region_default = compute_region
+        elif isinstance(region, str):
+            region_default = region
         else:
-            region_default = list(compute_region)
+            region_default = list(region)
 
         exp = (
             dict(experimental_options)
@@ -570,7 +571,7 @@ class Runner:
             ),
             cache=cache,
             app_name=app.name,
-            server_name=SERVER_CLASS_NAME,
+            webhook_function=WEBHOOK_FUNCTION,
             github_secret_name=github_name,
             webhook_secret_name=webhook_name,
             job_image_name=job_image_name,
@@ -608,26 +609,30 @@ class Runner:
         run_env = dict(env or {})
         run_env["RUNNER_MODAL_NAME"] = name
 
-        app.server(
-            image=image if image is not None else cls.control_plane_image(),
+        control_image = image if image is not None else cls.control_plane_image()
+        from runner_modal.webhook import webhook as webhook_entry
+
+        app.function(
+            name=WEBHOOK_FUNCTION,
+            image=control_image,
             secrets=[webhook_secret],
             volumes=vol_map,
             env=run_env,
-            compute_region=compute_region,
-            routing_region=routing_region,
+            region=region,
             cloud=cloud,
             min_containers=min_containers,
             max_containers=max_containers,
-            unauthenticated=unauthenticated,
-            target_concurrency=target_concurrency,
             buffer_containers=buffer_containers,
-            scaleup_window=scaleup_window,
             scaledown_window=scaledown_window,
+            timeout=timeout,
             startup_timeout=startup_timeout,
-            port=port,
             ephemeral_disk=ephemeral_disk,
             proxy=proxy,
-        )(RunnerServer)
+        )(
+            modal.concurrent(max_inputs=WEBHOOK_MAX_INPUTS)(
+                modal.asgi_app()(webhook_entry)
+            )
+        )
         return runner
 
     @classmethod
@@ -793,16 +798,16 @@ class Runner:
     @property
     def url(self) -> str | None:
         self.hydrate()
-        if not self.meta.app_name or not self.meta.server_name:
+        if not self.meta.app_name or not self.meta.webhook_function:
             return None
         try:
-            server = modal.Server.from_name(
+            fn = modal.Function.from_name(
                 self.meta.app_name,
-                self.meta.server_name,
+                self.meta.webhook_function,
                 environment_name=self.environment_name,
                 client=self.client,
             )
-            return server.get_url()
+            return fn.get_web_url()
         except modal.exception.Error:
             return None
 
@@ -830,7 +835,7 @@ class Runner:
             cache=self.meta.cache,
             active_runners=self.active_count(app_id=app_id),
             app_name=self.meta.app_name,
-            server_name=self.meta.server_name,
+            webhook_function=self.meta.webhook_function,
             github_secret_name=self.meta.github_secret_name,
             webhook_secret_name=self.meta.webhook_secret_name,
             job_image_name=self.meta.job_image_name,

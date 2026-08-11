@@ -4,7 +4,7 @@
 
 Webhook: {Runner.from_name("gpu").url}/github
 Copy examples/gpu/workflow.yml into your repo.
-``gpu=`` on Runner.create sets Job Sandbox defaults (not the control-plane Server).
+``gpu=`` on Runner.create sets Job Sandbox defaults (not the webhook Function).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ Runner.create(
     github_secret=github,
     webhook_secret=webhook,
     repositories=["YOUR_ORG/YOUR_REPO"],
-    compute_region="us-east",
+    region="us-east",
     labels=["self-hosted", "modal", "gpu"],
     gpu="T4",
     cpu=4.0,

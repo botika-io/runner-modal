@@ -1,4 +1,4 @@
-"""HTTP control plane — webhook FastAPI app, events, delivery store (not exported)."""
+"""Webhook FastAPI face, delivery store, Modal ASGI entry (not exported)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import hmac
 import logging
+import os
 import time
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -26,6 +27,14 @@ OUTCOME_HEADER = "X-Runner-Modal-Outcome"
 REASON_HEADER = "X-Runner-Modal-Reason"
 
 log = logging.getLogger("runner_modal.webhook")
+
+
+def webhook() -> FastAPI:
+    """Modal ASGI entry — mounted env only (KeyError if missing)."""
+    return WebhookApp(
+        os.environ["RUNNER_MODAL_NAME"],
+        webhook_secret=os.environ["WEBHOOK_SECRET"],
+    ).fastapi
 
 
 class DeliveryRecord(BaseModel):
@@ -96,7 +105,20 @@ class WorkflowJobEvent(BaseModel):
         if event_name and event_name != "workflow_job":
             return None
 
-        event = cls.model_validate_json(body)
+        payload = body
+        content_type = hdrs.get("content-type", "")
+        if "application/x-www-form-urlencoded" in content_type or payload.startswith(
+            b"payload="
+        ):
+            from urllib.parse import parse_qs
+
+            form = parse_qs(payload.decode(), keep_blank_values=True)
+            values = form.get("payload") or []
+            if not values:
+                raise AuthError("missing form payload field")
+            payload = values[0].encode()
+
+        event = cls.model_validate_json(payload)
         if event.action not in ("queued", "cancelled"):
             return None
 
@@ -282,7 +304,7 @@ class WebhookApp:
             ) from e
         except ValidationError as e:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=e.errors()
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
             ) from e
 
         if event is None:
@@ -423,7 +445,3 @@ class WebhookApp:
         job = self.job_from_name(runner, f"job-{job_id}")
         if job is not None:
             job.terminate()
-
-    @classmethod
-    def for_runner(cls, name: str, *, webhook_secret: str) -> FastAPI:
-        return cls(name, webhook_secret=webhook_secret).fastapi

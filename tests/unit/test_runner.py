@@ -10,7 +10,7 @@ import runner_modal
 from runner_modal import Runner
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
-from runner_modal.meta import JOB_KIND, JOB_MODULE, KIND_TAG, PACKAGE_SPEC, POOL_TAG
+from runner_modal.meta import JOB_KIND, JOB_MODULE, KIND_TAG, POOL_TAG
 
 
 def test_public_surface_is_runner_and_errors_only() -> None:
@@ -29,7 +29,7 @@ def test_public_surface_is_runner_and_errors_only() -> None:
         "WebhookApp",
         "DeliveryStore",
         "JobSpec",
-        "RunnerServer",
+        "DeliveryRecord",
     ):
         assert name not in runner_modal.__all__
         assert name not in vars(runner_modal)
@@ -188,7 +188,15 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> N
         patch.object(Runner, "default_image", return_value=recipe),
         patch.object(Runner, "control_plane_image", return_value=MagicMock()),
         patch("runner_modal.runner.modal.App.lookup", return_value=MagicMock()),
-        patch.object(app, "server", return_value=lambda cls: cls) as server,
+        patch(
+            "runner_modal.runner.modal.concurrent",
+            side_effect=lambda **kw: lambda f: f,
+        ),
+        patch(
+            "runner_modal.runner.modal.asgi_app",
+            side_effect=lambda **kw: lambda f: f,
+        ),
+        patch.object(app, "function", return_value=lambda f: f) as register,
     ):
         out = Runner.create(
             app=app,
@@ -207,14 +215,17 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> N
         assert runner_handle.meta.job_image_name == "acme-job"
         assert runner_handle.meta.github_secret_name == "github-token"
         assert runner_handle.meta.webhook_secret_name == "github-webhook"
+        assert runner_handle.meta.webhook_function == "webhook"
         assert runner_handle.meta.repositories == ["acme/api"]
         assert runner_handle.meta.cpu == 2.0
         assert runner_handle.meta.gpu == "T4"
         persist.assert_called_once()
-        assert server.call_args.kwargs["secrets"] == [webhook]
-        assert "gpu" not in server.call_args.kwargs
-        assert "cpu" not in server.call_args.kwargs
-        assert server.call_args.kwargs["min_containers"] == 0
+        assert register.call_args.kwargs["secrets"] == [webhook]
+        assert register.call_args.kwargs["name"] == "webhook"
+        assert "gpu" not in register.call_args.kwargs
+        assert "cpu" not in register.call_args.kwargs
+        assert register.call_args.kwargs["min_containers"] == 0
+        assert register.call_args.kwargs["buffer_containers"] == 1
 
 
 def test_runner_create_rejects_empty_labels_and_repositories() -> None:
@@ -321,12 +332,13 @@ def test_admits_requires_repo_pool_subset_and_self_hosted() -> None:
         )
 
 
-def test_images_install_pinned_package_spec() -> None:
+def test_images_install_runtime_deps_and_local_package() -> None:
     with patch("runner_modal.runner.modal.Image") as image_cls:
         slim = MagicMock()
         image_cls.debian_slim.return_value = slim
         slim.apt_install.return_value = slim
         slim.uv_pip_install.return_value = slim
+        slim.add_local_python_source.return_value = slim
         slim.env.return_value = slim
         with patch.object(
             Runner,
@@ -334,4 +346,5 @@ def test_images_install_pinned_package_spec() -> None:
             side_effect=lambda img, **kwargs: img,
         ):
             Runner.default_image()
-        slim.uv_pip_install.assert_called_with(PACKAGE_SPEC)
+        slim.uv_pip_install.assert_called()
+        slim.add_local_python_source.assert_called_with("runner_modal", copy=True)

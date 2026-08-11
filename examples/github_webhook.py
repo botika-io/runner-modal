@@ -23,7 +23,7 @@ Runner.create(
     github_secret=github,
     webhook_secret=webhook,
     repositories=[REPO],
-    compute_region="us-east",
+    region="us-east",
     labels=["self-hosted", "modal", "ci"],
     cpu=2.0,
     memory=4096,

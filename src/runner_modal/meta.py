@@ -14,10 +14,24 @@ DEFAULT_RUNNER_SHA256 = (
     "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
 )
 JOB_MODULE = "runner_modal.job"
+WEBHOOK_FUNCTION = "webhook"
 PACKAGE_VERSION = "0.1.0"
-# Image installs must match a release tag; bump with pyproject on release.
-PACKAGE_SPEC = (
-    f"git+https://github.com/modal-projects/runner-modal.git@v{PACKAGE_VERSION}"
+# Documented install pin for operators (`uv add …`). Image builds install
+# runtime deps from PyPI and bake local ``runner_modal`` via
+# ``add_local_python_source`` until the package is public.
+PACKAGE_SPEC = "git+https://github.com/modal-projects/runner-modal.git@main"
+CONTROL_PLANE_DEPS = (
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
+    "modal>=1.5.2,<2",
+    "pydantic>=2.0",
+    "tenacity>=9.0.0",
+)
+JOB_DEPS = (
+    "httpx>=0.28.0",
+    "modal>=1.5.2,<2",
+    "pydantic>=2.0",
+    "tenacity>=9.0.0",
 )
 
 
@@ -30,7 +44,7 @@ class RunnerMeta(BaseModel):
     max_concurrent: int | None = None
     cache: bool = False
     app_name: str | None = None
-    server_name: str | None = None
+    webhook_function: str | None = None
     github_secret_name: str | None = None
     webhook_secret_name: str | None = None
     job_image_name: str | None = None
@@ -55,7 +69,7 @@ class RunnerInfo(BaseModel):
     cache: bool
     active_runners: int
     app_name: str | None
-    server_name: str | None
+    webhook_function: str | None
     github_secret_name: str | None
     webhook_secret_name: str | None
     job_image_name: str | None

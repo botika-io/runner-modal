@@ -12,9 +12,9 @@ from runner_modal.meta import (
 )
 
 
-def test_package_spec_pins_release_tag() -> None:
-    assert PACKAGE_VERSION in PACKAGE_SPEC
-    assert PACKAGE_SPEC.endswith(f"@v{PACKAGE_VERSION}")
+def test_package_spec_pins_git_main_until_release() -> None:
+    assert PACKAGE_VERSION == "0.1.0"
+    assert PACKAGE_SPEC.endswith("@main")
     assert "runner-modal.git" in PACKAGE_SPEC
 
 
@@ -56,7 +56,7 @@ def test_runner_info_snapshot_fields() -> None:
         cache=False,
         active_runners=1,
         app_name="app",
-        server_name="RunnerServer",
+        webhook_function="webhook",
         github_secret_name="github-token",
         webhook_secret_name="github-webhook",
         job_image_name="ci-job",

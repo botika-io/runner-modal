@@ -4,9 +4,11 @@
 
 ### Breaking
 
-- `Runner.create` requires non-empty `labels`; default `min_containers=0`.
-- `cpu` / `memory` / `gpu` on `Runner.create` are Job Sandbox defaults (not Server resources).
-- Images install a **pinned** git tag (`PACKAGE_SPEC`); Actions runner tarball is checksum-verified.
+- Control plane is a Function `@modal.asgi_app` (not Modal Server). URL host is `*.modal.run`; re-point GitHub webhooks after redeploy.
+- `Runner.create` uses `region=` (not `compute_region=`). Meta field `webhook_function` replaces `server_name`.
+- `Runner.create` requires non-empty `labels`; default `min_containers=0`, `buffer_containers=1`.
+- `cpu` / `memory` / `gpu` on `Runner.create` are Job Sandbox defaults (not control-plane resources).
+- Images install runtime deps from PyPI and bake local `runner_modal` (`add_local_python_source`); Actions runner tarball is checksum-verified. `PACKAGE_SPEC` documents the operator install pin (`@main` until public tag).
 - Removed `StageClock` / `runner_modal.profile` (tracing TBD).
 - Job entrypoint: `JobSpec.start` / `JobSpec.mint_jitconfig` (no free `mint_jitconfig` helper).
 
@@ -21,6 +23,7 @@
 ### Changed
 
 - Quick start documents webhook UI, token scopes, and troubleshooting.
+- Module `api` / `server` → `webhook` (ASGI entry + FastAPI collaborators).
 
 ## 0.1.0
 
