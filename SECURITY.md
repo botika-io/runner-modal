@@ -14,22 +14,22 @@ Admission is fail-closed: repository must be in `repositories`, pool labels must
 
 ## Job resources
 
-`cpu` / `memory` / `gpu` on `Runner.create` are default **Job** Sandbox resources. The webhook control-plane Server does not take those knobs. One Runner = one resource profile.
+`cpu` / `memory` / `gpu` on `Runner.create` are default **Job** Sandbox resources. The webhook Function does not take those knobs. One Runner = one resource profile.
 
 ## Secrets
 
 Use **two** named Modal Secrets:
 
 1. **`github_secret`** — `GITHUB_TOKEN` only — mounted on Job Sandboxes
-2. **`webhook_secret`** — `WEBHOOK_SECRET` only — mounted on the Server
+2. **`webhook_secret`** — `WEBHOOK_SECRET` only — mounted on the webhook Function
 
 Never put both keys in one Secret. Workflow code on a Job can read every env key Modal mounts. If `WEBHOOK_SECRET` is present in a Job, a hostile workflow can forge control-plane requests.
 
 Prefer a fine-scoped GitHub App or PAT limited to runner JIT / admin on the allowlisted repos.
 
-## Unauthenticated Server
+## Public webhook URL
 
-`Runner.create` defaults to `unauthenticated=True` so GitHub can POST to your Modal URL. Auth for `/github` is HMAC only. `GET /health` is public and reports name and concurrency counts.
+`Runner.create` registers a public `@modal.asgi_app` Function so GitHub can POST. Auth for `/github` is HMAC only. `GET /health` is public and reports name and concurrency counts. Cold-start requests **queue** (Function inputs); they are not rejected with 503 the way Modal Servers reject zero→one traffic.
 
 ## Shared `/cache`
 

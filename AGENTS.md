@@ -18,7 +18,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Public surface is entity-based: `Runner` + nested `Runner.Job`. Prefer Modal SDK vocabulary (`create` / `from_name` / `objects` / `ephemeral`; Job ≈ Sandbox).
 - Export only via `__all__`. Do not underscore-prefix types for “privacy”; omit them from `__all__` instead.
 - No free public helpers (`spawn`, `parse_labels`, pools, ASGI attach helpers). If a concern is a lead responsibility, put it on an entity (or a method on the owning entity).
-- One `Runner.create` per App. Modal Server class is stable `RunnerServer` (Servers have no parameters). Runner identity is `RUNNER_MODAL_NAME`.
+- One `Runner.create` per App. Control plane is a Runner-registered Function `@modal.asgi_app` named `webhook` with `@modal.concurrent`. Runner identity is `RUNNER_MODAL_NAME`. Inputs queue on cold start — do not use Modal Server for GitHub webhooks (503 on zero→one).
 - Soft capacity (`has_capacity` / `max_concurrent`) is **soft** (list-then-create TOCTOU). Document it as soft; never present it as a linearizable lock.
 - **Job resources:** Modal-twin flat kwargs — `cpu`, `memory`, `gpu`, `experimental_options` (e.g. `{"vm_runtime": True}` for Docker/VM). Do **not** invent `ResourceSpec | DockerResources`, xor validators, or `isinstance` resource dispatch. Prefer `docker_image()` when `vm_runtime` is set; let Modal enforce GPU vs VM limits.
 - **Admission:** `repositories` is required (non-empty). `admits(labels, repository)` fail-closed. No admit-all mode.
@@ -27,8 +27,8 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 - Public primitives take kwargs / `modal.Secret` handles. No ambient `os.environ.get` for credentials or product config on `Runner` / `Job` / `WebhookApp`.
 - Clients and scripts may use env / Modal CLI tokens. Optional `client=` like Modal entities.
-- In-container entrypoints (`RunnerServer.start`, `python -m runner_modal.job`) may read only values **mounted** via `secrets=` / `env=` at create time; KeyError if missing.
-- Split Secrets: `github_secret` (`GITHUB_TOKEN`, Jobs only) and `webhook_secret` (`WEBHOOK_SECRET`, Server only). Never co-mount.
+- In-container entrypoints (`webhook()` ASGI entry, `python -m runner_modal.job`) may read only values **mounted** via `secrets=` / `env=` at create time; KeyError if missing.
+- Split Secrets: `github_secret` (`GITHUB_TOKEN`, Jobs only) and `webhook_secret` (`WEBHOOK_SECRET`, webhook Function only). Never co-mount webhook into Jobs.
 
 ## Python construction & style
 
@@ -48,7 +48,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - FastAPI: HTTP status conveys success. Response models without `ok: bool`. Use `HTTPException` for 401 / 400 / 503.
 - Sync I/O (Modal SDK, httpx): use sync `def` endpoints or `asyncio.to_thread`. Never block `async def` handlers with sync Modal/httpx calls.
 - Credentials via required named Secrets on `Runner.create(github_secret=…, webhook_secret=…)` and `Job.create(github_secret=…)`. Never put `GITHUB_TOKEN`, `WEBHOOK_SECRET`, or JIT strings in Sandbox `env=` dicts.
-- JIT mint runs only inside the Job (`python -m runner_modal.job`) from `GITHUB_TOKEN` injected by `github_secret=`. `WebhookApp` takes an explicit `webhook_secret=`; Server start requires `WEBHOOK_SECRET` from the mounted Secret (KeyError if missing).
+- JIT mint runs only inside the Job (`python -m runner_modal.job`) from `GITHUB_TOKEN` injected by `github_secret=`. `WebhookApp` takes an explicit `webhook_secret=`; ASGI entry `webhook()` requires mounted `WEBHOOK_SECRET` / `RUNNER_MODAL_NAME` (KeyError if missing).
 - Verify GitHub webhooks with `hmac.compare_digest` on the raw body before parse. Require `X-GitHub-Delivery` (no job-id fallback).
 
 ## Concurrency & shared state
@@ -60,10 +60,10 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 ## Layout, images, tests
 
-- Modules by responsibility: `runner` / `meta` / `job` / `api` / `server` / `exceptions`. Keep nested `Job` if it matches the Modal twin; extract collaborators if `runner.py` grows further.
-- Images: control plane and job images install the library with ``uv_pip_install`` from the pinned ``PACKAGE_SPEC`` in ``meta.py`` (git tag until PyPI). Named Job Image ``"{name}-job"`` is published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name``. No Path / ``add_local_dir`` for package install.
+- Modules by responsibility: `runner` / `meta` / `job` / `webhook` / `exceptions`. Keep nested `Job` if it matches the Modal twin; extract collaborators if `runner.py` grows further.
+- Images: install runtime deps with ``uv_pip_install(*CONTROL_PLANE_DEPS|JOB_DEPS)`` and bake ``add_local_python_source("runner_modal", copy=True)`` until the package is public. ``PACKAGE_SPEC`` documents the operator ``uv add`` pin. Named Job Image ``"{name}-job"`` is published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name``. No Path / ``add_local_dir``.
 - Default `cache=False`. Shared `/cache` Volume is same-pool only — not Actions cache.
-- One unit test file per impl file (`test_runner.py`, `test_job.py`, `test_api.py`, `test_server.py`, `test_exceptions.py`).
+- One unit test file per impl file (`test_runner.py`, `test_job.py`, `test_webhook.py`, `test_exceptions.py`, `test_meta.py`).
 - Test HMAC failure, delivery claim, admission (repo + labels), and capacity semantics — not only exports / signatures.
 - Retries (tenacity): transient network / timeouts / 5xx only. Never retry 401 / 403 / validation errors.
 
@@ -72,7 +72,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Process-local `_REGISTRY` / create caches / fake idempotency
 - Underscore-prefixing types or helpers for privacy (`_Foo`, `_helper`) — omit from `__all__` instead
 - Naming our types `App` (conflicts with `modal.App`) or other Modal entity names
-- `getattr` / `hasattr` / `object.__new__` / blocked `__init__` / mutating `__name__` for Modal Server identity
+- `getattr` / `hasattr` / `object.__new__` / blocked `__init__` / mutating `__name__` for entity identity
 - None-filtered `**kwargs` bags into Modal APIs
 - Tagged resource unions / xor validators / `sandbox_kwargs` helpers instead of Modal flat kwargs
 - `ok: bool` on HTTP response models
@@ -93,10 +93,11 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Optimize from measured profile data only; do not infer bottlenecks. Prefer general, non-overfit changes that keep functionality — no micro-hack opts.
 - README perf content: Python-generated charts for general CI-runner metrics people care about (including vs GitHub Actions when relevant); do not overfit the README to a single profile run. Use the readme skill when revamping READMEs. Keep README concise; no em dashes.
 - Create experimental scratch repos under `modal-projects` as `internal` by default. `runner-modal` itself is intended to be public OSS.
-- Keep the webhook control plane on Modal Server (`RunnerServer`); do not migrate it to Functions/`asgi_app` unless evidence clearly outweighs the warm concurrent spawn twin.
+- Prefer Modal-idiomatic control-plane primitives and highest architecture quality; full revamp OK with no backward compat. Control plane is Function `@modal.asgi_app` (queue on cold start), not Modal Server.
 - After dogfood or profiling sessions, stop/remove Modal apps, Sandboxes, and leftover GitHub self-hosted runners you spun up.
 - Operator-deployed library (each user deploys themselves), not a managed multi-tenant SaaS; no backward compatibility required for the OSS revamp.
-- Public DX stays entity-only: no free helper functions; put lead concerns on entities or methods on the owning entity.
+- Public DX stays entity-only: no free helper functions; put lead concerns on entities or methods on the owning entity. Do not invent entities where they are not appropriate; minimize entities.
+- Unit tests: no free helper functions in test files; inline setup in each test (module-level constants OK). Prefer behavior/outcome assertions over internals.
 - Brand as `runner-modal` without posing as a Modal product; quiet non-affiliation is enough (do not over-emphasize).
 - Keep `.cursor/` gitignored and uncommitted.
 
@@ -106,3 +107,4 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - This repo is a uv project; prefer `uv run modal` (or project-local Modal) over ad-hoc `uvx modal` when Modal is a dependency.
 - This repo’s dogfood control plane is Modal App `runner-modal-ci-app` (`examples/github_webhook.py`) with `min_containers=0` — keep it deployed rather than stopping after sessions. Patching the GitHub webhook URL without also setting the secret desyncs HMAC from Modal `WEBHOOK_SECRET`.
 - Profile and e2e dogfood against the current repo `modal-projects/runner-modal`, not placeholder or octocat repos.
+- This repo’s GitHub Actions CI should run on self-hosted `runner-modal` runners, not GitHub-hosted runners.

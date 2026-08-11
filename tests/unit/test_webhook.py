@@ -1,4 +1,4 @@
-"""Tests for runner_modal.api — HMAC, admission, delivery claim, webhook outcomes."""
+"""Tests for runner_modal.webhook — HMAC, admit, claim, outcomes."""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from runner_modal.api import (
+from runner_modal.exceptions import AuthError, ConcurrencyLimitError
+from runner_modal.meta import RunnerMeta
+from runner_modal.runner import Runner
+from runner_modal.webhook import (
     PENDING_TTL_SECONDS,
     DeliveryRecord,
     DeliveryStore,
     WebhookApp,
     WorkflowJobEvent,
 )
-from runner_modal.exceptions import AuthError, ConcurrencyLimitError
-from runner_modal.meta import RunnerMeta
-from runner_modal.runner import Runner
 
 POOL_LABELS = ["self-hosted", "modal", "acme"]
 REPO = "acme/api"
@@ -131,6 +131,37 @@ def test_event_parses_queued_and_ignores_completed() -> None:
     )
 
 
+def test_event_parses_form_urlencoded_github_payload() -> None:
+    from urllib.parse import urlencode
+
+    inner = json.dumps(
+        {
+            "action": "queued",
+            "workflow_job": {
+                "id": 7,
+                "run_id": 1,
+                "labels": list(POOL_LABELS),
+            },
+            "repository": {"full_name": REPO},
+        }
+    )
+    body = urlencode({"payload": inner}).encode()
+    event = WorkflowJobEvent.from_request(
+        body,
+        {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-github-event": "workflow_job",
+            "x-github-delivery": "d-form",
+            "x-hub-signature-256": "sha256="
+            + hmac.new(HOOK.encode(), body, hashlib.sha256).hexdigest(),
+        },
+        secret=HOOK,
+    )
+    assert event is not None
+    assert event.job_id == 7
+    assert event.delivery_id == "d-form"
+
+
 def test_try_claim_reclaims_stale_pending_without_object_id() -> None:
     store = MagicMock()
     stale = DeliveryRecord(
@@ -173,7 +204,7 @@ def test_bind_object_durable_retries_until_verified() -> None:
     ).model_dump(mode="json")
     store.get.side_effect = [None, bound]
 
-    with patch("runner_modal.api.time.sleep"):
+    with patch("runner_modal.webhook.time.sleep"):
         deliveries.bind_object_durable("d1", "sb-1")
 
     assert store.__setitem__.call_count >= 1
@@ -214,10 +245,13 @@ def test_queued_job_accepted_with_object_id() -> None:
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=gh),
         patch.object(runner, "job_app", return_value=app),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create", return_value=fake_job) as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch(
+            "runner_modal.webhook.Runner.Job.create",
+            return_value=fake_job,
+        ) as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -250,7 +284,7 @@ def test_bad_hmac_returns_401() -> None:
         }
     ).encode()
     with patch.object(DeliveryStore, "__init__", lambda self, name: None):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -275,7 +309,7 @@ def test_ignored_event_returns_204_with_reason() -> None:
         }
     ).encode()
     with patch.object(DeliveryStore, "__init__", lambda self, name: None):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -315,10 +349,10 @@ def test_label_mismatch_returns_204_and_does_not_create() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create") as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -359,10 +393,10 @@ def test_repo_mismatch_returns_204_and_does_not_create() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create") as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -402,10 +436,10 @@ def test_missing_self_hosted_returns_204() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create") as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -445,10 +479,10 @@ def test_empty_pool_labels_returns_204() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create") as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -489,10 +523,10 @@ def test_cancelled_terminates_matching_job() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch.object(WebhookApp, "job_from_name", return_value=job),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -532,10 +566,10 @@ def test_cancelled_skips_repo_mismatch() -> None:
     with (
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch.object(WebhookApp, "terminate_job") as terminate,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -577,10 +611,10 @@ def test_duplicate_delivery_returns_existing_object_id() -> None:
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(DeliveryStore, "try_claim", return_value=done),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create") as create,
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -623,9 +657,9 @@ def test_in_flight_delivery_returns_503() -> None:
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(DeliveryStore, "try_claim", return_value=pending),
         patch.object(runner, "hydrate"),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -669,13 +703,13 @@ def test_capacity_full_releases_claim_and_returns_503() -> None:
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch(
-            "runner_modal.api.Runner.Job.create",
+            "runner_modal.webhook.Runner.Job.create",
             side_effect=ConcurrencyLimitError("full"),
         ),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -720,14 +754,14 @@ def test_create_failure_releases_claim() -> None:
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch(
-            "runner_modal.api.Runner.Job.create",
+            "runner_modal.webhook.Runner.Job.create",
             side_effect=RuntimeError("boom"),
         ),
     ):
         resp = TestClient(
-            WebhookApp.for_runner("acme", webhook_secret=HOOK),
+            WebhookApp("acme", webhook_secret=HOOK).fastapi,
             raise_server_exceptions=False,
         ).post(
             "/github",
@@ -777,10 +811,10 @@ def test_mark_done_failure_after_bind_still_accepts() -> None:
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create", return_value=fake_job),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -831,10 +865,10 @@ def test_bind_failure_terminates_job_releases_and_returns_503() -> None:
         patch.object(runner, "hydrate"),
         patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
-        patch("runner_modal.api.Runner.Job.create", return_value=fake_job),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).post(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
             "/github",
             content=body,
             headers={
@@ -861,7 +895,7 @@ def test_health_reports_labels_and_concurrency() -> None:
         repositories=[REPO],
         max_concurrent=20,
         app_name="acme-ci",
-        server_name="RunnerServer",
+        webhook_function="webhook",
         github_secret_name="github-token",
         webhook_secret_name="github-webhook",
         job_image_name="acme-job",
@@ -870,9 +904,9 @@ def test_health_reports_labels_and_concurrency() -> None:
         patch.object(DeliveryStore, "__init__", lambda self, name: None),
         patch.object(runner, "hydrate"),
         patch.object(runner, "active_count", return_value=2),
-        patch("runner_modal.api.Runner.from_name", return_value=runner),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
     ):
-        resp = TestClient(WebhookApp.for_runner("acme", webhook_secret=HOOK)).get(
+        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).get(
             "/health"
         )
         assert resp.status_code == 200

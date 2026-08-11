@@ -8,17 +8,17 @@ You deploy your own Modal App and Secrets. This is not a managed multi-tenant se
 
 - Python >= 3.12, [Modal](https://modal.com) account + CLI (`modal setup`)
 - Repo admin on GitHub (webhook + token)
-- Two named Modal Secrets: `GITHUB_TOKEN` (Jobs) and `WEBHOOK_SECRET` (Server)
+- Two named Modal Secrets: `GITHUB_TOKEN` (Jobs) and `WEBHOOK_SECRET` (webhook Function)
 
 ## Quick start (basic CI)
 
 ### 1. Install
 
 ```bash
-uv add git+https://github.com/modal-projects/runner-modal.git@v0.1.0
+uv add git+https://github.com/modal-projects/runner-modal.git@main
 ```
 
-Images install the same git tag. After upgrading the pin, redeploy so `{name}-job` republishes.
+Images bake the local ``runner_modal`` package at deploy time. After a public release, switch Images to the published pin and redeploy so `{name}-job` republishes.
 
 ### 2. Secrets
 
@@ -41,7 +41,7 @@ modal deploy examples/basic/app.py
 
 ```python
 from runner_modal import Runner
-print(Runner.from_name("ci").url)  # None until the Server is ready
+print(Runner.from_name("ci").url)  # None until the App is deployed
 # GET {url}/health
 ```
 
@@ -67,7 +67,7 @@ Copy [`examples/basic/workflow.yml`](examples/basic/workflow.yml) into `.github/
 
 One `Runner.create` per App = one resource profile. GPU pool = separate App (see `examples/gpu/`). Docker-in-CI: `experimental_options={"vm_runtime": True}` on `Runner.create` (no GPU).
 
-`cpu` / `memory` / `gpu` on `Runner.create` are **Job** Sandbox defaults. The control-plane Server stays small.
+`cpu` / `memory` / `gpu` on `Runner.create` are **Job** Sandbox defaults. The webhook Function stays small (`buffer_containers=1` by default so cold starts rarely race GitHub’s delivery timeout).
 
 ## Troubleshooting
 
@@ -76,12 +76,12 @@ One `Runner.create` per App = one resource profile. GPU pool = separate App (see
 | HTTP 401 | Webhook secret ≠ Modal `WEBHOOK_SECRET` |
 | HTTP 204 + `X-Runner-Modal-Reason` | Admit miss: repo allowlist, labels, missing `self-hosted`, empty pool |
 | HTTP 503 capacity / busy | Soft `max_concurrent`, or delivery in flight |
-| Job queued forever | Modal Sandbox logs (JIT 401/403, runner boot); `GET /health` |
+| Job queued forever | Modal Sandbox logs (JIT 401/403, runner boot); `GET /health`; confirm webhook URL is the Function `*.modal.run` URL |
 
 ## How it works
 
 ```text
-GitHub  --workflow_job-->  RunnerServer
+GitHub  --workflow_job-->  webhook (Function + asgi_app)
                               |
                        admit (repo + labels)
                               |
