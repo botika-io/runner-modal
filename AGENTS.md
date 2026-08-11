@@ -61,7 +61,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 ## Layout, images, tests
 
 - Modules by responsibility: `runner` / `meta` / `job` / `api` / `server` / `exceptions`. Keep nested `Job` if it matches the Modal twin; extract collaborators if `runner.py` grows further.
-- Images: control plane and job images install the library with ``uv_pip_install`` from GitHub (``PACKAGE_GIT`` in ``meta.py``) until PyPI. Named Job Image ``"{name}-job"`` is still published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name`` only. No Path / ``add_local_dir`` for package install.
+- Images: control plane and job images install the library with ``uv_pip_install`` from the pinned ``PACKAGE_SPEC`` in ``meta.py`` (git tag until PyPI). Named Job Image ``"{name}-job"`` is published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name``. No Path / ``add_local_dir`` for package install.
 - Default `cache=False`. Shared `/cache` Volume is same-pool only — not Actions cache.
 - One unit test file per impl file (`test_runner.py`, `test_job.py`, `test_api.py`, `test_server.py`, `test_exceptions.py`).
 - Test HMAC failure, delivery claim, admission (repo + labels), and capacity semantics — not only exports / signatures.

@@ -1,0 +1,24 @@
+# Copy into YOUR_REPO/.github/workflows/
+# Requires examples/gpu/app.py deployed (labels self-hosted/modal/gpu, gpu=T4).
+name: GPU CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gpu:
+    runs-on:
+      - self-hosted
+      - modal
+      - gpu
+      - job-${{ github.run_id }}-${{ github.job }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prove GPU
+        run: |
+          nvidia-smi
+          # Replace with your CUDA / torch / pytest-gpu steps.

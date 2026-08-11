@@ -8,7 +8,10 @@ from runner_modal.exceptions import (
     JobTimeoutError,
     RunnerError,
 )
+from runner_modal.meta import PACKAGE_VERSION
 from runner_modal.runner import Runner, RunnerInfo
+
+__version__ = PACKAGE_VERSION
 
 __all__ = [
     "AuthError",
@@ -17,4 +20,5 @@ __all__ = [
     "Runner",
     "RunnerError",
     "RunnerInfo",
+    "__version__",
 ]

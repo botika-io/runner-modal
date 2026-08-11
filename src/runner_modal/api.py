@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
+import logging
 import time
 from collections.abc import Mapping
 from typing import Literal, Self
 
 import modal
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from runner_modal.exceptions import AuthError, ConcurrencyLimitError
-from runner_modal.profile import StageClock
 from runner_modal.runner import Runner
 
 PENDING_TTL_SECONDS = 15 * 60
+BIND_ATTEMPTS = 5
+BIND_RETRY_SECONDS = 0.05
+OUTCOME_HEADER = "X-Runner-Modal-Outcome"
+REASON_HEADER = "X-Runner-Modal-Reason"
+
+log = logging.getLogger("runner_modal.webhook")
 
 
 class DeliveryRecord(BaseModel):
@@ -37,10 +45,7 @@ class WorkflowJob(BaseModel):
 
 
 class WorkflowJobEvent(BaseModel):
-    """GitHub ``workflow_job`` payload.
-
-    Use ``from_request`` for HMAC verification. Handler branches on ``action``.
-    """
+    """GitHub ``workflow_job`` event; construct via ``from_request`` (HMAC first)."""
 
     action: str
     workflow_job: WorkflowJob
@@ -99,25 +104,23 @@ class WorkflowJobEvent(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """GET /health body — success is HTTP 200, not an ``ok`` field."""
-
+    # HTTP 200 is success; no ``ok: bool`` field.
     runner: str
+    labels: list[str]
+    repositories: int
     active_runners: int
     max_concurrent: int | None
 
 
 class JobAccepted(BaseModel):
-    """POST /github when a job was created or already delivered."""
-
     object_id: str
     name: str | None = None
 
 
 class DeliveryStore:
-    """Idempotency store for GitHub delivery IDs (Modal Dict).
+    """Delivery-ID idempotency (Modal Dict).
 
-    Claim before side effects: ``try_claim`` → create → ``bind_object`` → ``mark_done``.
-    Pending records with ``object_id`` are never reclaimed (create already succeeded).
+    Claim before create; pending rows with ``object_id`` are never TTL-reclaimed.
     """
 
     def __init__(self, runner_name: str) -> None:
@@ -165,19 +168,37 @@ class DeliveryStore:
         return self.get(delivery_id)
 
     def bind_object(self, delivery_id: str, object_id: str) -> None:
-        """Record Sandbox id on a pending claim before ``mark_done``."""
         self.store[delivery_id] = DeliveryRecord(
             status="pending",
             ts=time.time(),
             object_id=object_id,
         ).model_dump(mode="json")
 
+    def bind_object_durable(self, delivery_id: str, object_id: str) -> None:
+        """Write and verify ``object_id`` so TTL reclaim cannot double-spawn."""
+        last_error: Exception | None = None
+        for attempt in range(BIND_ATTEMPTS):
+            try:
+                self.bind_object(delivery_id, object_id)
+                record = self.get(delivery_id)
+                if record is not None and record.object_id == object_id:
+                    return
+                last_error = RuntimeError(
+                    f"delivery {delivery_id!r} bind not durable after write"
+                )
+            except Exception as e:
+                last_error = e
+            if attempt + 1 < BIND_ATTEMPTS:
+                time.sleep(BIND_RETRY_SECONDS)
+        assert last_error is not None
+        raise last_error
+
     def mark_done(self, delivery_id: str, object_id: str) -> None:
         record = DeliveryRecord(status="done", ts=time.time(), object_id=object_id)
         self.store[delivery_id] = record.model_dump(mode="json")
 
     def release(self, delivery_id: str) -> None:
-        """Drop a pending claim so GitHub can retry (only if no object_id)."""
+        """Delete claim only while pending and still unbound."""
         record = self.get(delivery_id)
         if (
             record is not None
@@ -188,7 +209,7 @@ class DeliveryStore:
 
 
 class WebhookApp:
-    """FastAPI control plane for a named Runner (Modal Server mounts this)."""
+    """ASGI control plane for one named Runner."""
 
     def __init__(self, runner_name: str, *, webhook_secret: str) -> None:
         if not webhook_secret:
@@ -207,10 +228,31 @@ class WebhookApp:
             },
         )(self.github_webhook)
 
+    def outcome(self, outcome: str, reason: str | None = None) -> dict[str, str]:
+        headers = {OUTCOME_HEADER: outcome}
+        if reason:
+            headers[REASON_HEADER] = reason
+        return headers
+
+    def ignore(self, reason: str) -> Response:
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers=self.outcome("ignored", reason),
+        )
+
+    def accept(self, body: JobAccepted, *, outcome: str = "accepted") -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=body.model_dump(mode="json"),
+            headers=self.outcome(outcome),
+        )
+
     def health(self) -> HealthResponse:
         info = Runner.from_name(self.runner_name).info()
         return HealthResponse(
             runner=info.name,
+            labels=list(info.labels),
+            repositories=len(info.repositories),
             active_runners=info.active_runners,
             max_concurrent=info.max_concurrent,
         )
@@ -228,8 +270,15 @@ class WebhookApp:
                 body, headers, secret=self.webhook_secret
             )
         except AuthError as e:
+            log.info(
+                "webhook auth_failed runner=%s detail=%s",
+                self.runner_name,
+                e,
+            )
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e),
+                headers=self.outcome("auth", "hmac"),
             ) from e
         except ValidationError as e:
             raise HTTPException(
@@ -237,38 +286,66 @@ class WebhookApp:
             ) from e
 
         if event is None:
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
+            log.info(
+                "webhook ignored runner=%s reason=event_filtered",
+                self.runner_name,
+            )
+            return self.ignore("event_filtered")
 
         runner = Runner.from_name(self.runner_name)
-
-        if not runner.admits(event.labels, event.repo):
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        reason = runner.admit_reason(event.labels, event.repo)
+        if reason is not None:
+            log.info(
+                "webhook ignored runner=%s delivery=%s repo=%s action=%s reason=%s",
+                self.runner_name,
+                event.delivery_id,
+                event.repo,
+                event.action,
+                reason,
+            )
+            return self.ignore(reason)
 
         if event.action == "cancelled":
             self.terminate_job(runner, event.job_id)
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
+            log.info(
+                "webhook cancelled runner=%s delivery=%s job_id=%s",
+                self.runner_name,
+                event.delivery_id,
+                event.job_id,
+            )
+            return Response(
+                status_code=status.HTTP_204_NO_CONTENT,
+                headers=self.outcome("cancelled"),
+            )
 
-        with StageClock("delivery_claim"):
-            existing = self.deliveries.try_claim(event.delivery_id)
+        existing = self.deliveries.try_claim(event.delivery_id)
         if existing is not None:
             if existing.object_id:
-                return JobAccepted(object_id=existing.object_id)
+                log.info(
+                    "webhook duplicate runner=%s delivery=%s object_id=%s",
+                    self.runner_name,
+                    event.delivery_id,
+                    existing.object_id,
+                )
+                return self.accept(
+                    JobAccepted(object_id=existing.object_id), outcome="duplicate"
+                )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="delivery in progress",
+                headers=self.outcome("busy", "delivery_in_progress"),
             )
 
         job_name = f"job-{event.job_id}"
         try:
-            with StageClock("job_create"):
-                job = Runner.Job.create(
-                    runner,
-                    app=runner.job_app(),
-                    repository=event.repo,
-                    labels=event.labels,
-                    name=job_name,
-                    github_secret=runner.github_secret(),
-                )
+            job = Runner.Job.create(
+                runner,
+                app=runner.job_app(),
+                repository=event.repo,
+                labels=event.labels,
+                name=job_name,
+                github_secret=runner.github_secret(),
+            )
         except LookupError as e:
             self.deliveries.release(event.delivery_id)
             raise HTTPException(
@@ -276,8 +353,15 @@ class WebhookApp:
             ) from e
         except ConcurrencyLimitError as e:
             self.deliveries.release(event.delivery_id)
+            log.info(
+                "webhook capacity runner=%s delivery=%s",
+                self.runner_name,
+                event.delivery_id,
+            )
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+                headers=self.outcome("capacity"),
             ) from e
         except modal.exception.AlreadyExistsError:
             job = self.job_from_name(runner, job_name)
@@ -288,14 +372,36 @@ class WebhookApp:
             self.deliveries.release(event.delivery_id)
             raise
 
-        # Persist object_id before mark_done so TTL reclaim cannot double-spawn.
-        with StageClock("delivery_bind"):
-            self.deliveries.bind_object(event.delivery_id, job.object_id)
-        with StageClock("delivery_mark_done"):
+        try:
+            self.deliveries.bind_object_durable(event.delivery_id, job.object_id)
+        except Exception:
+            with contextlib.suppress(Exception):
+                job.terminate()
+            self.deliveries.release(event.delivery_id)
+            log.info(
+                "webhook bind_failed runner=%s delivery=%s",
+                self.runner_name,
+                event.delivery_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="delivery bind failed",
+                headers=self.outcome("bind_failed"),
+            ) from None
+        with contextlib.suppress(Exception):
             self.deliveries.mark_done(event.delivery_id, job.object_id)
-        return JobAccepted(
-            object_id=job.object_id,
-            name=job_name,
+        log.info(
+            "webhook accepted runner=%s delivery=%s repo=%s object_id=%s",
+            self.runner_name,
+            event.delivery_id,
+            event.repo,
+            job.object_id,
+        )
+        return self.accept(
+            JobAccepted(
+                object_id=job.object_id,
+                name=job_name,
+            )
         )
 
     def job_from_name(self, runner: Runner, job_name: str) -> Runner.Job | None:

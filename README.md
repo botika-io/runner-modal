@@ -4,67 +4,79 @@ Self-hosted [GitHub Actions](https://docs.github.com/en/actions) runners on [Mod
 
 You deploy your own Modal App and Secrets. This is not a managed multi-tenant service.
 
-`Runner` registers a webhook control plane. Jobs run as Sandboxes via `python -m runner_modal.job`.
-
 ## Requirements
 
-- Python >= 3.12, [Modal](https://modal.com) CLI
+- Python >= 3.12, [Modal](https://modal.com) account + CLI (`modal setup`)
+- Repo admin on GitHub (webhook + token)
 - Two named Modal Secrets: `GITHUB_TOKEN` (Jobs) and `WEBHOOK_SECRET` (Server)
 
-## Quick start
+## Quick start (basic CI)
+
+### 1. Install
 
 ```bash
-uv add git+https://github.com/modal-projects/runner-modal
+uv add git+https://github.com/modal-projects/runner-modal.git@v0.1.0
+```
 
+Images install the same git tag. After upgrading the pin, redeploy so `{name}-job` republishes.
+
+### 2. Secrets
+
+```bash
 modal secret create github-token GITHUB_TOKEN=ghp_xxx
 modal secret create github-webhook WEBHOOK_SECRET=$(openssl rand -hex 32)
 ```
 
-Not on PyPI yet — install from the GitHub repo. Then put this in e.g. `app.py` and `modal deploy app.py`:
+Prefer a fine-scoped GitHub App or PAT that can call `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig` on allowlisted repos (classic: `repo` + admin on self-hosted runners; App: Administration read/write for runners).
+
+### 3. Deploy
+
+Copy [`examples/basic/app.py`](examples/basic/app.py), set `repositories=["YOUR_ORG/YOUR_REPO"]`, then:
+
+```bash
+modal deploy examples/basic/app.py
+```
+
+### 4. Webhook URL
 
 ```python
-import modal
 from runner_modal import Runner
-
-app = modal.App("my-runners")
-github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
-webhook = modal.Secret.from_name("github-webhook", required_keys=["WEBHOOK_SECRET"])
-
-Runner.create(
-    app=app,
-    name="ci",
-    github_secret=github,
-    webhook_secret=webhook,
-    repositories=["YOUR_ORG/YOUR_REPO"],
-    compute_region="us-east",
-    labels=["self-hosted", "modal", "ci"],
-    max_concurrent=20,
-    min_containers=0,
-    idle_timeout=900,
-)
+print(Runner.from_name("ci").url)  # None until the Server is ready
+# GET {url}/health
 ```
 
-```python
-print(Runner.from_name("ci").url)  # None until ready
-# Webhook URL: {url}/github
-```
+In GitHub → Settings → Webhooks → Add webhook:
 
-```yaml
-runs-on:
-  - self-hosted
-  - modal
-  - ci
-  - job-${{ github.run_id }}-${{ github.job }}
-```
+| Field | Value |
+|-------|--------|
+| Payload URL | `{url}/github` |
+| Content type | `application/json` |
+| Secret | same value as `WEBHOOK_SECRET` |
+| Events | **Workflow jobs** only |
 
-One `Runner.create` per App. It publishes named Image `{name}-job` (package installed from GitHub into the image). Include every pool label plus a unique pin so one runner maps to one job. Use `min_containers=0` to keep the App deployed while scaling the control plane to zero when idle.
+### 5. Workflow
 
-| Key | Secret | Mounted on | Purpose |
-|-----|--------|------------|---------|
-| `GITHUB_TOKEN` | `github_secret` | Job Sandbox only | Mint JIT inside the job |
-| `WEBHOOK_SECRET` | `webhook_secret` | Server only | HMAC on `POST /github` |
+Copy [`examples/basic/workflow.yml`](examples/basic/workflow.yml) into `.github/workflows/`. Pool labels must match `Runner.create(labels=…)`. Keep the unique `job-${{ github.run_id }}-${{ github.job }}` pin.
 
-Never put both keys in one Secret. Never put tokens or JIT in Sandbox `env=`.
+## Examples
+
+| Kit | When |
+|-----|------|
+| [`examples/basic/`](examples/basic/) | Standard checkout + test CI |
+| [`examples/gpu/`](examples/gpu/) | CUDA / ML jobs (`gpu="T4"` Job defaults) |
+
+One `Runner.create` per App = one resource profile. GPU pool = separate App (see `examples/gpu/`). Docker-in-CI: `experimental_options={"vm_runtime": True}` on `Runner.create` (no GPU).
+
+`cpu` / `memory` / `gpu` on `Runner.create` are **Job** Sandbox defaults. The control-plane Server stays small.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---------|--------|
+| HTTP 401 | Webhook secret ≠ Modal `WEBHOOK_SECRET` |
+| HTTP 204 + `X-Runner-Modal-Reason` | Admit miss: repo allowlist, labels, missing `self-hosted`, empty pool |
+| HTTP 503 capacity / busy | Soft `max_concurrent`, or delivery in flight |
+| Job queued forever | Modal Sandbox logs (JIT 401/403, runner boot); `GET /health` |
 
 ## How it works
 
@@ -82,77 +94,20 @@ GitHub  --workflow_job-->  RunnerServer
                        mint JIT -> ./run.sh --jitconfig …
 ```
 
-| Piece | Modal object | Role |
-|-------|--------------|------|
-| Meta | Dict `{name}-runner-meta` | Labels, repos, capacity, secret/image names |
-| Deliveries | Dict `{name}-runner-deliveries` | Claim before create |
-| Job image | Named Image `{name}-job` | Published at `Runner.create` |
-| Cache | Volume `{name}-cache` → `/cache` | Optional (`cache=True`); same-pool Volume, not `actions/cache` |
-| Control plane | Server `RunnerServer` | HMAC, admission, create/cancel |
-| Job | Sandbox | `python -m runner_modal.job` |
-
-Admission: repository is in `repositories`, job has `self-hosted`, pool is non-empty, and `pool ⊆ job.labels`.
-
-Examples: [`github_webhook.py`](examples/github_webhook.py), [`imperative_create.py`](examples/imperative_create.py).
-
-## Performance
-
-Time-to-start, cold vs warm, concurrency, and idle cost (not workflow pytest time):
-
-![Time to runner ready](docs/time-to-ready.png)
-
-![Warm queue budget](docs/queue-budget.png)
-
-![Concurrency / burst](docs/concurrency.png)
-
-![Idle vs active cost](docs/idle-cost.png)
-
-Charts are illustrative. Regenerate with `uv run --group dev python scripts/charts.py`.
-
-`max_concurrent` is soft (list-then-create TOCTOU). Idle cost is mostly `min_containers`; jobs are ephemeral Sandboxes.
+`max_concurrent` is soft (list-then-create). See [SECURITY.md](SECURITY.md).
 
 ## Imperative jobs
 
 ```python
-github = modal.Secret.from_name("github-token", required_keys=["GITHUB_TOKEN"])
-
 job = Runner.Job.create(
     runner,
     repository="YOUR_ORG/YOUR_REPO",
     labels=["modal", "ci", "job-1"],
     github_secret=github,
-    gpu="t4",
+    gpu="T4",  # overrides Runner defaults when set
 )
 job.wait()
 ```
-
-Docker / VM (no GPU): `experimental_options={"vm_runtime": True}`. Job kwargs are Modal Sandbox-shaped: `cpu`, `memory`, `gpu`, `experimental_options`.
-
-## API
-
-| Call | Notes |
-|------|-------|
-| `Runner.create(app, name, github_secret=…, webhook_secret=…, repositories=…)` | Registers Server + publishes job Image |
-| `Runner.from_name` / `objects` / `ephemeral` | Named handle / admin |
-| `runner.url` | Server URL, or `None` until ready |
-| `Runner.Job.create(…, repository=…, github_secret=…)` | Eager job Sandbox |
-| `Runner.Job.from_id` / `from_name` / `wait` | Lookup / block |
-| `POST {url}/github` | Admit → claim → create → 200 / 204 / 5xx |
-
-| Situation | Result |
-|-----------|--------|
-| Undeployed | `runner.url is None` |
-| Ignored webhook | HTTP 204 |
-| Bad args | `ValueError` |
-| Missing meta | `LookupError` |
-| Bad HMAC / missing delivery | `AuthError` / HTTP 401 |
-| At `max_concurrent` | `ConcurrencyLimitError` / HTTP 503 |
-| Delivery in progress | HTTP 503 |
-| `job.wait` timeout | `JobTimeoutError` |
-
-## Security
-
-See [SECURITY.md](SECURITY.md). Short version: HMAC proves the webhook secret, not repo ACL; `repositories` is required; Jobs never see `WEBHOOK_SECRET`; treat fork PRs as hostile; `max_concurrent` is soft.
 
 ## Development
 
@@ -163,8 +118,6 @@ uv run ruff check src/runner_modal tests examples
 uv run ruff format --check src/runner_modal tests examples
 uv run ty check
 ```
-
-See [`AGENTS.md`](AGENTS.md) for conventions and [`CONTRIBUTING.md`](CONTRIBUTING.md) for PRs.
 
 ## License
 
