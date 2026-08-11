@@ -90,5 +90,5 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 ## Workspace
 
-- This repo’s GitHub Actions CI and Release workflows run on self-hosted `runner-modal` runners (`self-hosted`, `modal`, `ci`, unique `job-…` pin), not GitHub-hosted runners.
-- Maintainer CI App is `scripts/ci_app.py` (App `runner-modal-ci-app`).
+- This repo’s GitHub Actions CI and Release workflows run on ``ubuntu-latest``.
+- Maintainer CI App is `scripts/ci_app.py` (App `runner-modal-ci-app`) for dogfooding Jobs, not for repo CI.

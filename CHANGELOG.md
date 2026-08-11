@@ -36,3 +36,4 @@
 - Stale delivery reclaim overwrites in place (no delete-then-put).
 - Maintainer CI App lives at `scripts/ci_app.py` (not under `examples/`).
 - Install pin is `git+…@v0.1.0` (`PACKAGE_SPEC`).
+- CI and Release workflows run on GitHub-hosted `ubuntu-latest` (not self-hosted dogfood runners).
