@@ -8,9 +8,12 @@ import pytest
 
 import runner_modal
 from runner_modal import Runner
-from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
-from runner_modal.job import JOB_SPEC_ENV, JobSpec
+from runner_modal.entrypoint import JOB_SPEC_ENV, JobSpec
+from runner_modal.exceptions import ConcurrencyLimitError
 from runner_modal.meta import JOB_KIND, JOB_MODULE, KIND_TAG, POOL_TAG
+
+POOL = ["self-hosted", "modal"]
+REPO = "a/b"
 
 
 def test_public_surface_is_runner_and_errors_only() -> None:
@@ -36,13 +39,40 @@ def test_public_surface_is_runner_and_errors_only() -> None:
 
 
 def test_job_create_raises_when_at_soft_capacity() -> None:
-    runner = Runner.from_name("full", create_if_missing=True, max_concurrent=1)
+    runner = Runner.from_name(
+        "full",
+        create_if_missing=True,
+        max_concurrent=1,
+        labels=POOL,
+        repositories=[REPO],
+    )
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=False),
         pytest.raises(ConcurrencyLimitError, match="max_concurrent"),
     ):
-        Runner.Job.create(runner, repository="a/b", github_secret=MagicMock())
+        Runner.Job.create(
+            runner, repository=REPO, labels=POOL, github_secret=MagicMock()
+        )
+
+
+def test_job_create_rejects_when_not_admitted() -> None:
+    runner = Runner.from_name(
+        "p",
+        create_if_missing=True,
+        labels=POOL,
+        repositories=[REPO],
+    )
+    with (
+        patch.object(runner, "hydrate"),
+        pytest.raises(ValueError, match="repository_mismatch"),
+    ):
+        Runner.Job.create(
+            runner,
+            repository="other/repo",
+            labels=POOL,
+            github_secret=MagicMock(),
+        )
 
 
 def test_has_capacity_is_soft_list_then_create() -> None:
@@ -71,7 +101,9 @@ def test_url_none_when_undeployed() -> None:
 def test_job_create_passes_github_secret_and_job_spec() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-test"
-    runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
+    runner = Runner.from_name(
+        "p", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
     runner.meta = runner.meta.model_copy(update={"job_image_name": "p-job"})
     gh = MagicMock()
 
@@ -85,7 +117,7 @@ def test_job_create_passes_github_secret_and_job_spec() -> None:
     ):
         job = Runner.Job.create(
             runner,
-            repository="a/b",
+            repository=REPO,
             labels=["job-1"],
             github_secret=gh,
             cpu=2.0,
@@ -96,7 +128,7 @@ def test_job_create_passes_github_secret_and_job_spec() -> None:
         assert kwargs["secrets"][0] is gh
         assert "MODAL_RUNNER_JIT" not in (kwargs.get("env") or {})
         spec = JobSpec.model_validate_json(kwargs["env"][JOB_SPEC_ENV])
-        assert spec.repository == "a/b"
+        assert spec.repository == REPO
         assert "modal" in spec.labels and "job-1" in spec.labels
         assert kwargs["tags"][KIND_TAG] == JOB_KIND
         assert kwargs["tags"][POOL_TAG] == "p"
@@ -106,7 +138,9 @@ def test_job_create_passes_github_secret_and_job_spec() -> None:
 def test_job_create_uses_meta_resource_defaults_when_omitted() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-gpu"
-    runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
+    runner = Runner.from_name(
+        "p", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
     runner.meta = runner.meta.model_copy(
         update={"job_image_name": "p-job", "gpu": "T4", "cpu": 4.0, "memory": 8192}
     )
@@ -119,7 +153,7 @@ def test_job_create_uses_meta_resource_defaults_when_omitted() -> None:
         patch("runner_modal.runner.modal.Image.from_name", return_value=MagicMock()),
     ):
         Runner.Job.create(
-            runner, repository="a/b", labels=["job-1"], github_secret=MagicMock()
+            runner, repository=REPO, labels=["job-1"], github_secret=MagicMock()
         )
         assert create.call_args.kwargs["gpu"] == "T4"
         assert create.call_args.kwargs["cpu"] == 4.0
@@ -129,7 +163,9 @@ def test_job_create_uses_meta_resource_defaults_when_omitted() -> None:
 def test_job_create_explicit_gpu_overrides_meta_default() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-a100"
-    runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
+    runner = Runner.from_name(
+        "p", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
     runner.meta = runner.meta.model_copy(
         update={"job_image_name": "p-job", "gpu": "T4"}
     )
@@ -143,7 +179,7 @@ def test_job_create_explicit_gpu_overrides_meta_default() -> None:
     ):
         Runner.Job.create(
             runner,
-            repository="a/b",
+            repository=REPO,
             labels=["job-1"],
             github_secret=MagicMock(),
             gpu="A100",
@@ -154,7 +190,9 @@ def test_job_create_explicit_gpu_overrides_meta_default() -> None:
 def test_job_create_without_named_image_builds_default() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-local"
-    runner = Runner.from_name("p", create_if_missing=True, labels=["modal"])
+    runner = Runner.from_name(
+        "p", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
     assert runner.meta.job_image_name is None
     recipe = MagicMock()
     with (
@@ -164,7 +202,7 @@ def test_job_create_without_named_image_builds_default() -> None:
         patch.object(Runner, "default_image", return_value=recipe) as default_image,
     ):
         Runner.Job.create(
-            runner, repository="a/b", labels=["job-1"], github_secret=MagicMock()
+            runner, repository=REPO, labels=["job-1"], github_secret=MagicMock()
         )
         default_image.assert_called_once()
 
@@ -255,15 +293,37 @@ def test_runner_create_rejects_empty_labels_and_repositories() -> None:
         )
 
 
-def test_objects_create_rejects_empty_labels() -> None:
+def test_objects_create_rejects_empty_labels_and_repositories() -> None:
     with pytest.raises(ValueError, match="labels"):
-        Runner.objects.create("x", labels=[])
+        Runner.objects.create("x", labels=[], repositories=[REPO])
+    with pytest.raises(ValueError, match="repositories"):
+        Runner.objects.create("x", labels=POOL, repositories=[])
+    with pytest.raises(ValueError, match="owner/repo"):
+        Runner.objects.create("x", labels=POOL, repositories=["bad"])
+
+
+def test_objects_delete_removes_deliveries_dict() -> None:
+    dict_objects = MagicMock()
+    volume_objects = MagicMock()
+    with (
+        patch("runner_modal.runner.modal.Dict") as dict_cls,
+        patch("runner_modal.runner.modal.Volume") as volume_cls,
+    ):
+        dict_cls.objects = dict_objects
+        volume_cls.objects = volume_objects
+        Runner.objects.delete("acme")
+        names = [c.args[0] for c in dict_objects.delete.call_args_list]
+        assert "acme-runner-meta" in names
+        assert "acme-runner-deliveries" in names
+        volume_objects.delete.assert_called_once()
 
 
 def test_job_create_docker_sets_vm_runtime() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-d"
-    runner = Runner.from_name("d", create_if_missing=True)
+    runner = Runner.from_name(
+        "d", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
@@ -274,8 +334,8 @@ def test_job_create_docker_sets_vm_runtime() -> None:
     ):
         Runner.Job.create(
             runner,
-            repository="a/b",
-            labels=["modal"],
+            repository=REPO,
+            labels=["job-1"],
             github_secret=MagicMock(),
             experimental_options={"vm_runtime": True},
         )
@@ -284,23 +344,16 @@ def test_job_create_docker_sets_vm_runtime() -> None:
         assert spec.use_docker is True
 
 
-def test_job_wait_timeout_terminates() -> None:
+def test_job_wait_blocks_until_sandbox_finishes() -> None:
     sb = MagicMock()
     sb.object_id = "sb-w"
-
-    def hang(**kwargs: object) -> None:
-        import time
-
-        time.sleep(10)
-
-    sb.wait.side_effect = hang
+    sb.returncode = 0
     job = Runner.Job(sb)
-    with pytest.raises(JobTimeoutError):
-        job.wait(timeout=0.05)
-    sb.terminate.assert_called()
+    assert job.wait() == 0
+    sb.wait.assert_called_once_with(raise_on_termination=False)
 
 
-def test_admits_requires_repo_pool_subset_and_self_hosted() -> None:
+def test_admit_reason_requires_repo_pool_subset_and_self_hosted() -> None:
     runner = Runner.from_name(
         "p",
         create_if_missing=True,
@@ -314,7 +367,9 @@ def test_admits_requires_repo_pool_subset_and_self_hosted() -> None:
                 "repositories": ["acme/api"],
             }
         )
-        assert runner.admits(["self-hosted", "modal", "job-1"], "acme/api") is True
+        assert (
+            runner.admit_reason(["self-hosted", "modal", "job-1"], "acme/api") is None
+        )
         assert (
             runner.admit_reason(["modal", "job-1"], "acme/api") == "missing_self_hosted"
         )

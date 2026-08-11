@@ -1,8 +1,8 @@
-"""Dogfood control plane for modal-projects/runner-modal (not a consumer template).
+"""Maintainer CI control plane for modal-projects/runner-modal.
 
-Prefer examples/basic/ or examples/gpu/ when onboarding.
+Not a consumer template — copy examples/basic/ or examples/gpu/ instead.
 
-  modal deploy examples/github_webhook.py
+  modal deploy scripts/ci_app.py
 """
 
 from __future__ import annotations

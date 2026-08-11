@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import os
 import re
 import time
@@ -14,8 +13,8 @@ from typing import ClassVar, Self
 
 import modal
 
-from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
-from runner_modal.job import JOB_SPEC_ENV, JobSpec
+from runner_modal.entrypoint import JOB_SPEC_ENV, JobSpec
+from runner_modal.exceptions import ConcurrencyLimitError
 from runner_modal.meta import (
     CONTROL_PLANE_DEPS,
     DEFAULT_RUNNER_SHA256,
@@ -55,6 +54,15 @@ class RunnerObjects:
             raise ValueError(f"invalid Runner name {name!r}")
         if not labels:
             raise ValueError("labels must be a non-empty sequence")
+        if not repositories:
+            raise ValueError(
+                "repositories must be a non-empty sequence of 'owner/repo'"
+            )
+        repos: list[str] = []
+        for repo in repositories:
+            if repo.count("/") != 1:
+                raise ValueError(f"repository must be 'owner/repo', got {repo!r}")
+            repos.append(repo)
         modal.Dict.objects.create(
             f"{name}-runner-meta",
             allow_existing=allow_existing,
@@ -73,7 +81,7 @@ class RunnerObjects:
             create_if_missing=True,
             environment_name=environment_name,
             labels=list(labels),
-            repositories=list(repositories or []),
+            repositories=repos,
             max_concurrent=max_concurrent,
             cache=cache,
             client=client,
@@ -90,6 +98,12 @@ class RunnerObjects:
         modal.Dict.objects.delete(
             f"{name}-runner-meta",
             allow_missing=allow_missing,
+            environment_name=environment_name,
+            client=client,
+        )
+        modal.Dict.objects.delete(
+            f"{name}-runner-deliveries",
+            allow_missing=True,
             environment_name=environment_name,
             client=client,
         )
@@ -235,21 +249,21 @@ class Runner:
             """Create a job Sandbox (eager) — same role as ``modal.Sandbox.create``.
 
             ``github_secret`` must provide ``GITHUB_TOKEN``. JIT mint runs inside
-            the Sandbox via ``python -m runner_modal.job``.
+            the Sandbox via ``python -m runner_modal.entrypoint``.
             """
             if repository.count("/") != 1:
                 raise ValueError(f"repository must be 'owner/repo', got {repository!r}")
 
             runner.hydrate()
+            merged_labels = list(dict.fromkeys([*(labels or []), *runner.meta.labels]))
+            reason = runner.admit_reason(merged_labels, repository)
+            if reason is not None:
+                raise ValueError(f"Job.create rejected: {reason}")
             if not runner.has_capacity():
                 raise ConcurrencyLimitError(
                     f"Runner {runner.name!r} at max_concurrent="
                     f"{runner.meta.max_concurrent}"
                 )
-
-            merged_labels = list(dict.fromkeys([*(labels or []), *runner.meta.labels]))
-            if not merged_labels:
-                raise ValueError("Job.create requires non-empty labels")
 
             group_id = (
                 runner_group_id
@@ -348,25 +362,9 @@ class Runner:
         def terminate(self) -> None:
             self.sandbox.terminate()
 
-        def wait(self, *, timeout: float | None = None) -> int | None:
+        def wait(self) -> int | None:
             """Block until the Sandbox finishes (like ``Sandbox.wait``)."""
-            if timeout is None:
-                self.sandbox.wait(raise_on_termination=False)
-                return self.sandbox.returncode
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-
-                def wait_sandbox() -> None:
-                    self.sandbox.wait(raise_on_termination=False)
-
-                fut: concurrent.futures.Future[None] = pool.submit(wait_sandbox)
-                try:
-                    fut.result(timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    self.sandbox.terminate()
-                    raise JobTimeoutError(
-                        f"Runner.Job {self.object_id} did not finish within {timeout}s"
-                    ) from None
+            self.sandbox.wait(raise_on_termination=False)
             return self.sandbox.returncode
 
         def poll(self) -> int | None:
@@ -760,9 +758,6 @@ class Runner:
             environment_name=self.environment_name,
             client=self.client,
         )
-
-    def admits(self, labels: Sequence[str], repository: str) -> bool:
-        return self.admit_reason(labels, repository) is None
 
     def admit_reason(self, labels: Sequence[str], repository: str) -> str | None:
         """``None`` if admitted; otherwise a stable ignore reason string."""

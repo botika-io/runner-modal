@@ -14,11 +14,19 @@ You deploy your own Modal App and Secrets. This is not a managed multi-tenant se
 
 ### 1. Install
 
+Until a PyPI release, install from GitHub (prefer a tag once one exists):
+
 ```bash
 uv add git+https://github.com/modal-projects/runner-modal.git@main
+# after first release: …runner-modal.git@v0.1.0
 ```
 
-Images bake the local ``runner_modal`` package at deploy time. After a public release, switch Images to the published pin and redeploy so `{name}-job` republishes.
+Deploy from a checkout (or editable install) so Modal Image builds can
+`add_local_python_source("runner_modal")`. Copy `examples/basic/app.py`, set
+`repositories=[…]`, then `modal deploy …`. GitHub Releases publish sdists;
+PyPI publish is not set up yet.
+
+Redeploying `Runner.create` overwrites Runner meta (last deploy wins).
 
 ### 2. Secrets
 
@@ -89,7 +97,7 @@ GitHub  --workflow_job-->  webhook (Function + asgi_app)
                               |
                        Job.create -> Sandbox
                               |
-                       python -m runner_modal.job
+                       python -m runner_modal.entrypoint
                               |
                        mint JIT -> ./run.sh --jitconfig …
 ```
@@ -102,7 +110,7 @@ GitHub  --workflow_job-->  webhook (Function + asgi_app)
 job = Runner.Job.create(
     runner,
     repository="YOUR_ORG/YOUR_REPO",
-    labels=["modal", "ci", "job-1"],
+    labels=["self-hosted", "modal", "ci", "job-1"],
     github_secret=github,
     gpu="T4",  # overrides Runner defaults when set
 )
