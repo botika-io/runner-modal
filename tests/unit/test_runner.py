@@ -21,7 +21,6 @@ def test_public_surface_is_runner_and_errors_only() -> None:
         "Runner",
         "AuthError",
         "ConcurrencyLimitError",
-        "JobTimeoutError",
         "RunnerError",
         "RunnerInfo",
         "__version__",

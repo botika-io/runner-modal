@@ -5,7 +5,6 @@ from __future__ import annotations
 from runner_modal.exceptions import (
     AuthError,
     ConcurrencyLimitError,
-    JobTimeoutError,
     RunnerError,
 )
 from runner_modal.meta import PACKAGE_VERSION
@@ -16,7 +15,6 @@ __version__ = PACKAGE_VERSION
 __all__ = [
     "AuthError",
     "ConcurrencyLimitError",
-    "JobTimeoutError",
     "Runner",
     "RunnerError",
     "RunnerInfo",

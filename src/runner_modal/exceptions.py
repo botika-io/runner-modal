@@ -1,7 +1,7 @@
 """Public exception types.
 
 Soft absence → ``None`` (e.g. ``runner.url``, ignored webhook).
-Failures → raise (auth, timeout, concurrency, or ``ValueError`` / ``LookupError``).
+Failures → raise (auth, concurrency, or ``ValueError`` / ``LookupError``).
 """
 
 from __future__ import annotations
@@ -16,8 +16,4 @@ class AuthError(RunnerError):
 
 
 class ConcurrencyLimitError(RunnerError):
-    pass
-
-
-class JobTimeoutError(RunnerError):
     pass

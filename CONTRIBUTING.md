@@ -10,6 +10,10 @@ uv run ruff format --check src/runner_modal tests examples
 uv run ty check
 ```
 
+## CI
+
+GitHub Actions runs on ``ubuntu-latest``. Run the setup commands above locally before opening a PR. The maintainer control plane (``scripts/ci_app.py``) is for dogfooding this product on real Jobs, not for repository CI.
+
 ## Conventions
 
 See [AGENTS.md](AGENTS.md): entity-based public DX (`Runner` / `Runner.Job`), no free public helpers, explicit kwargs / named Secrets (no ambient credential `getenv` in primitives), claim-before-create, soft capacity.
