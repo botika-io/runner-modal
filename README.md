@@ -14,13 +14,13 @@ You deploy your own Modal App and Secrets. This is not a managed multi-tenant se
 ## Quick start
 
 ```bash
-uv sync
+uv add git+https://github.com/modal-projects/runner-modal
 
 modal secret create github-token GITHUB_TOKEN=ghp_xxx
 modal secret create github-webhook WEBHOOK_SECRET=$(openssl rand -hex 32)
-
-modal deploy examples/github_webhook.py
 ```
+
+Not on PyPI yet — install from the GitHub repo. Then put this in e.g. `app.py` and `modal deploy app.py`:
 
 ```python
 import modal
@@ -35,7 +35,7 @@ Runner.create(
     name="ci",
     github_secret=github,
     webhook_secret=webhook,
-    repositories=["modal-projects/runner-modal"],
+    repositories=["YOUR_ORG/YOUR_REPO"],
     compute_region="us-east",
     labels=["self-hosted", "modal", "ci"],
     max_concurrent=20,
