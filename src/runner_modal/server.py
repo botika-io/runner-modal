@@ -9,14 +9,12 @@ import time
 import modal
 import uvicorn
 
-# Modal identifies Servers by the class ``__name__`` (no parameters allowed).
-# One ``Runner.create`` per App — the runner name is passed via ``RUNNER_MODAL_NAME``.
+# Modal keys Server identity by class ``__name__`` (no constructor params).
+# Runner name arrives via ``RUNNER_MODAL_NAME`` (one ``Runner.create`` per App).
 SERVER_CLASS_NAME = "RunnerServer"
 
 
 class RunnerServer:
-    """HTTP control plane started via ``@app.server``."""
-
     @modal.enter()
     def start(self) -> None:
         from runner_modal.api import WebhookApp

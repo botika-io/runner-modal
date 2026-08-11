@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from runner_modal.exceptions import (
     AuthError,
     ConcurrencyLimitError,
@@ -10,7 +12,8 @@ from runner_modal.exceptions import (
 )
 
 
-def test_exception_hierarchy() -> None:
-    assert issubclass(AuthError, RunnerError)
-    assert issubclass(ConcurrencyLimitError, RunnerError)
-    assert issubclass(JobTimeoutError, RunnerError)
+def test_product_errors_are_runner_errors() -> None:
+    for exc in (AuthError, ConcurrencyLimitError, JobTimeoutError):
+        assert issubclass(exc, RunnerError)
+        with pytest.raises(RunnerError):
+            raise exc("boom")

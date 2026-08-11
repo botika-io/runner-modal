@@ -9,14 +9,19 @@ KIND_TAG = "runner_modal"
 JOB_KIND = "runner"
 POOL_TAG = "runner_pool"
 DEFAULT_RUNNER_VERSION = "2.336.0"
+# Upstream actions-runner-linux-x64 tarball digest for DEFAULT_RUNNER_VERSION.
+DEFAULT_RUNNER_SHA256 = (
+    "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
+)
 JOB_MODULE = "runner_modal.job"
-# Install path for Images until the package is on PyPI.
-PACKAGE_GIT = "git+https://github.com/modal-projects/runner-modal.git"
+PACKAGE_VERSION = "0.1.0"
+# Image installs must match a release tag; bump with pyproject on release.
+PACKAGE_SPEC = (
+    f"git+https://github.com/modal-projects/runner-modal.git@v{PACKAGE_VERSION}"
+)
 
 
 class RunnerMeta(BaseModel):
-    """Persisted Runner Dict payload."""
-
     model_config = ConfigDict(frozen=True)
 
     name: str
@@ -34,11 +39,13 @@ class RunnerMeta(BaseModel):
     idle_timeout: int | None = None
     experimental_options: dict[str, object] | None = None
     runner_group_id: int = 1
+    # Job Sandbox defaults for webhook create when Job.create omits resources.
+    cpu: float | None = None
+    memory: int | None = None
+    gpu: str | None = None
 
 
 class RunnerInfo(BaseModel):
-    """Snapshot from ``Runner.info()``."""
-
     model_config = ConfigDict(frozen=True)
 
     name: str

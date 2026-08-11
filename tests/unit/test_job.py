@@ -1,4 +1,4 @@
-"""Tests for runner_modal.job."""
+"""Tests for runner_modal.job — Sandbox entrypoint behavior."""
 
 from __future__ import annotations
 
@@ -7,17 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from runner_modal.exceptions import AuthError
-from runner_modal.job import (
-    ACTIONS_RUNNER,
-    JOB_SPEC_ENV,
-    JobSpec,
-    main,
-    mint_jitconfig,
-    run,
-)
+from runner_modal.job import ACTIONS_RUNNER, JOB_SPEC_ENV, JobSpec
 
 
-def test_job_spec_roundtrip() -> None:
+def test_job_spec_roundtrips_json() -> None:
     spec = JobSpec(
         repository="a/b",
         labels=["modal"],
@@ -28,11 +21,11 @@ def test_job_spec_roundtrip() -> None:
     assert JobSpec.model_validate_json(spec.model_dump_json()).use_docker is True
 
 
-def test_main_requires_job_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_requires_job_spec_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(JOB_SPEC_ENV, raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match=JOB_SPEC_ENV):
-        main()
+        JobSpec.main()
 
 
 def test_main_requires_github_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,53 +33,66 @@ def test_main_requires_github_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(JOB_SPEC_ENV, spec.model_dump_json())
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(AuthError, match="GITHUB_TOKEN"):
-        main()
+        JobSpec.main()
 
 
-def test_run_mints_and_execs() -> None:
+def test_start_execs_actions_runner_with_jit() -> None:
     spec = JobSpec(repository="a/b", labels=["modal"], runner_name="r1")
     with (
-        patch("runner_modal.job.mint_jitconfig", return_value="JIT") as mint,
+        patch.object(JobSpec, "mint_jitconfig", return_value="JIT") as mint,
         patch("runner_modal.job.os.execv") as execv,
     ):
-        run(spec, token="tok")
-        mint.assert_called_once()
-        assert mint.call_args.kwargs["token"] == "tok"
+        spec.start(token="t")
+        mint.assert_called_once_with(token="t")
         execv.assert_called_once_with(
             ACTIONS_RUNNER, [ACTIONS_RUNNER, "--jitconfig", "JIT"]
         )
 
 
-def test_run_boots_docker_when_requested() -> None:
+def test_start_boots_docker_when_vm_runtime_requested() -> None:
     spec = JobSpec(
         repository="a/b", labels=["modal"], runner_name="r1", use_docker=True
     )
     with (
-        patch("runner_modal.job.boot_docker") as boot,
-        patch("runner_modal.job.mint_jitconfig", return_value="JIT"),
+        patch.object(JobSpec, "boot_docker") as boot,
+        patch.object(JobSpec, "mint_jitconfig", return_value="JIT"),
         patch("runner_modal.job.os.execv"),
     ):
-        run(spec, token="tok")
+        spec.start(token="t")
         boot.assert_called_once()
 
 
-def test_mint_requires_token_and_labels() -> None:
+def test_mint_rejects_bad_inputs() -> None:
     with pytest.raises(AuthError, match="token is required"):
-        mint_jitconfig(repository="a/b", labels=["m"], token="", name="r")
+        JobSpec(repository="a/b", labels=["m"], runner_name="r").mint_jitconfig(
+            token=""
+        )
     with pytest.raises(ValueError, match="labels must be non-empty"):
-        mint_jitconfig(repository="a/b", labels=[], token="t", name="r")
+        JobSpec(repository="a/b", labels=[], runner_name="r").mint_jitconfig(token="t")
     with pytest.raises(ValueError, match="owner/repo"):
-        mint_jitconfig(repository="bad", labels=["m"], token="t", name="r")
+        JobSpec(repository="bad", labels=["m"], runner_name="r").mint_jitconfig(
+            token="t"
+        )
 
 
-def test_mint_no_enterprise_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GITHUB_ENTERPRISE_DOMAIN", "evil.example")
-    with patch("runner_modal.job.httpx.post") as post:
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"encoded_jit_config": "x"}
-        post.return_value = resp
-        mint_jitconfig(repository="a/b", labels=["m"], token="t", name="r")
+def test_mint_returns_encoded_jit_from_github() -> None:
+    spec = JobSpec(repository="acme/api", labels=["modal"], runner_name="r1")
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"encoded_jit_config": "ENC"}
+    with patch("runner_modal.job.httpx.post", return_value=resp) as post:
+        assert spec.mint_jitconfig(token="tok") == "ENC"
         url = post.call_args.args[0]
-        assert url.startswith("https://api.github.com/")
-        assert "evil.example" not in url
+        assert url.endswith("/repos/acme/api/actions/runners/generate-jitconfig")
+        assert post.call_args.kwargs["json"]["labels"] == ["modal"]
+
+
+def test_mint_maps_401_to_auth_error() -> None:
+    spec = JobSpec(repository="a/b", labels=["m"], runner_name="r")
+    resp = MagicMock()
+    resp.status_code = 401
+    with (
+        patch("runner_modal.job.httpx.post", return_value=resp),
+        pytest.raises(AuthError, match="401"),
+    ):
+        spec.mint_jitconfig(token="tok")

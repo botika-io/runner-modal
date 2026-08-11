@@ -1,7 +1,4 @@
-"""Stage-time the Job.create critical path (throwaway; not product API).
-
-Matches the #4 shape: named Secret, JIT mint inside the Sandbox
-(``python -m runner_modal.job``), Named Image when meta has ``job_image_name``.
+"""Time the Job.create critical path (throwaway; not product API).
 
 Run from repo root:
 
@@ -15,12 +12,13 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from contextlib import contextmanager
+from collections.abc import Iterator
 
 import httpx
 import modal
 
 from runner_modal import Runner
-from runner_modal.profile import StageClock
 
 app = modal.App("runner-modal-profile")
 
@@ -30,6 +28,13 @@ SECRET_NAME = "github-runner"
 REPO = "modal-projects/runner-modal"
 
 
+@contextmanager
+def lap(label: str) -> Iterator[None]:
+    t0 = time.perf_counter()
+    yield
+    print(f"{(time.perf_counter() - t0) * 1000:8.1f} ms  {label}")
+
+
 @app.local_entrypoint()
 def main(
     repository: str = REPO,
@@ -37,11 +42,10 @@ def main(
     with_volume: bool = False,
     with_online: bool = False,
 ) -> None:
-    os.environ.setdefault("RUNNER_MODAL_PROFILE", "1")
     parent = modal.App.lookup(APP_NAME, create_if_missing=True)
     gh = modal.Secret.from_name(SECRET_NAME, required_keys=["GITHUB_TOKEN"])
 
-    with StageClock("Runner.objects.create(allow_existing)"):
+    with lap("Runner.objects.create(allow_existing)"):
         Runner.objects.create(
             POOL,
             allow_existing=True,
@@ -51,36 +55,35 @@ def main(
             cache=with_volume,
         )
 
-    with StageClock("Runner.from_name"):
+    with lap("Runner.from_name"):
         runner = Runner.from_name(POOL)
-    with StageClock("hydrate (cold)"):
+    with lap("hydrate (cold)"):
         runner.hydrate()
-    with StageClock("hydrate (warm no-op)"):
+    with lap("hydrate (warm no-op)"):
         runner.hydrate()
 
-    # Publish Named Image the same way Runner.create does.
     job_image_name = f"{POOL}-job"
     use_docker = bool((runner.meta.experimental_options or {}).get("vm_runtime"))
     recipe = Runner.docker_image() if use_docker else Runner.default_image()
-    with StageClock(f"Image.publish → {job_image_name}") as publish:
+    with lap(f"Image.publish → {job_image_name}"):
         recipe.build(parent).publish(job_image_name)
     runner.meta = runner.meta.model_copy(update={"job_image_name": job_image_name})
     runner.persist_meta()
     print(f"         meta.job_image_name={runner.meta.job_image_name!r}")
 
-    with StageClock("active_count / Sandbox.list"):
+    with lap("active_count / Sandbox.list"):
         runner.active_count()
-    with StageClock("has_capacity"):
+    with lap("has_capacity"):
         runner.has_capacity()
 
     d = modal.Dict.from_name(f"{POOL}-profile-dict", create_if_missing=True)
     key = f"k-{uuid.uuid4().hex}"
 
-    with StageClock("Dict put skip_if_exists (claim)"):
+    with lap("Dict put skip_if_exists (claim)"):
         d.put(key, {"status": "pending", "ts": time.time()}, skip_if_exists=True)
-    with StageClock("Dict get (hit)"):
+    with lap("Dict get (hit)"):
         d.get(key)
-    with StageClock("Dict set (mark_done)"):
+    with lap("Dict set (mark_done)"):
         d[key] = {"status": "done"}
 
     name = f"prof-echo-{int(time.time())}"
@@ -88,7 +91,7 @@ def main(
     if with_volume and runner.volume is not None:
         vols["/cache"] = runner.volume
 
-    with StageClock(f"Sandbox.create echo (volume={bool(vols)})") as echo:
+    with lap(f"Sandbox.create echo (volume={bool(vols)})"):
         sb = modal.Sandbox.create(
             "bash",
             "-lc",
@@ -102,11 +105,11 @@ def main(
             name=name,
             tags={"runner_modal": "profile"},
         )
-    with StageClock("Sandbox.exec echo"):
+    with lap("Sandbox.exec echo"):
         sb.exec("bash", "-lc", "echo hi").wait()
     sb.terminate()
 
-    with StageClock("Image.from_name (published job image)"):
+    with lap("Image.from_name (published job image)"):
         modal.Image.from_name(job_image_name)
 
     if with_job:
@@ -114,7 +117,7 @@ def main(
         runner_reg_name = f"profile-{int(time.time())}"
         job_name = f"prof-job-{int(time.time())}"
 
-        with StageClock("Job.create (named image + in-job JIT)") as job_lap:
+        with lap("Job.create (named image + in-job JIT)"):
             job = Runner.Job.create(
                 runner,
                 app=parent,
@@ -128,15 +131,10 @@ def main(
                 idle_timeout=60,
             )
         print(f"         id  {job.object_id}")
-        print(
-            f"\nJob.create wall ≈ {job_lap.ms:.0f} ms  "
-            f"(publish was {publish.ms:.0f} ms, separate from hot path)"
-        )
 
         if with_online:
             token = os.environ.get("GITHUB_TOKEN")
             if not token:
-                # Prefer reading via gh when Secret is only on Modal.
                 import subprocess
 
                 token = subprocess.check_output(
@@ -193,8 +191,4 @@ def main(
         print(
             "\n(skip Job.create — pass --with-job for full path; "
             "--with-online for create→online split)"
-        )
-        print(
-            f"echo Sandbox.create alone ≈ {echo.ms:.0f} ms "
-            "(lower bound before Actions runner image)"
         )

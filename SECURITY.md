@@ -10,7 +10,11 @@
 | `repositories` allowlist | Repo is explicitly permitted | Workflow code is trusted |
 | Label match (`pool ⊆ runs-on`) | Job targeted this pool | Soft capacity will not overshoot |
 
-Admission is fail-closed: repository must be in `repositories`, pool labels must match, and `self-hosted` must be present.
+Admission is fail-closed: repository must be in `repositories`, pool labels must match, and `self-hosted` must be present. Ignored deliveries return HTTP 204 with `X-Runner-Modal-Reason`.
+
+## Job resources
+
+`cpu` / `memory` / `gpu` on `Runner.create` are default **Job** Sandbox resources. The webhook control-plane Server does not take those knobs. One Runner = one resource profile.
 
 ## Secrets
 
@@ -34,6 +38,10 @@ Prefer a fine-scoped GitHub App or PAT limited to runner JIT / admin on the allo
 ## Soft capacity
 
 `max_concurrent` is a soft list-then-create check. Concurrent creators can overshoot. Treat it as cost guidance, not a hard reservation.
+
+## Delivery bind
+
+After a Job Sandbox is created, the control plane durable-binds `object_id` onto the delivery claim before HTTP 200. Pending claims **with** `object_id` are never TTL-reclaimed. If bind cannot be made durable, the Job is terminated, the unbound claim is released, and GitHub receives HTTP 503 so it can retry.
 
 ## Fork PRs and untrusted workflows
 

@@ -2,21 +2,34 @@
 
 ## Unreleased
 
+### Breaking
+
+- `Runner.create` requires non-empty `labels`; default `min_containers=0`.
+- `cpu` / `memory` / `gpu` on `Runner.create` are Job Sandbox defaults (not Server resources).
+- Images install a **pinned** git tag (`PACKAGE_SPEC`); Actions runner tarball is checksum-verified.
+- Removed `StageClock` / `runner_modal.profile` (tracing TBD).
+- Job entrypoint: `JobSpec.start` / `JobSpec.mint_jitconfig` (no free `mint_jitconfig` helper).
+
+### Added
+
+- Durable delivery bind (`bind_object_durable`) before accept; bind failure → terminate + 503.
+- Webhook outcome headers (`X-Runner-Modal-Outcome`, `X-Runner-Modal-Reason`) and richer `/health`.
+- `Runner.admit_reason` for fail-loud admission.
+- Consumer kits: `examples/basic/`, `examples/gpu/`.
+- GitHub Release workflow on `v*` tags (source dist; not PyPI).
+
 ### Changed
 
-- Quick start installs with `uv add git+https://github.com/modal-projects/runner-modal` (not PyPI yet).
-- Control-plane and job Images install the package from GitHub via `uv_pip_install` (works outside this repo clone).
+- Quick start documents webhook UI, token scopes, and troubleshooting.
 
 ## 0.1.0
 
 ### Breaking
 
-- `Runner.create` requires `github_secret`, `webhook_secret`, and non-empty `repositories` (replaces single `secret=`).
-- `Runner.Job.create` takes `github_secret=` (replaces `secret=`).
-- Webhook admission requires repository allowlist match; cancel uses the same gate.
-- `X-GitHub-Delivery` is required (no fallback to workflow job id).
+- `Runner.create` requires `github_secret`, `webhook_secret`, and non-empty `repositories`.
+- `Runner.Job.create` takes `github_secret=`.
+- Webhook admission requires repository allowlist; `X-GitHub-Delivery` required.
 - Default `cache=False`.
-- `RunnerMeta` / `RunnerInfo` use `github_secret_name` / `webhook_secret_name` (no `secret_name`).
 - Server mounts only `webhook_secret`; Jobs mount only `github_secret`.
 
 ### Added

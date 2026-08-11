@@ -17,24 +17,24 @@ import modal
 from runner_modal.exceptions import ConcurrencyLimitError, JobTimeoutError
 from runner_modal.job import JOB_SPEC_ENV, JobSpec
 from runner_modal.meta import (
+    DEFAULT_RUNNER_SHA256,
     DEFAULT_RUNNER_VERSION,
     JOB_KIND,
     JOB_MODULE,
     KIND_TAG,
     META_KEY,
-    PACKAGE_GIT,
+    PACKAGE_SPEC,
     POOL_TAG,
     RunnerInfo,
     RunnerMeta,
 )
-from runner_modal.profile import StageClock
 from runner_modal.server import SERVER_CLASS_NAME, RunnerServer
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 
 
 class RunnerObjects:
-    """Admin namespace — same shape as ``Volume.objects`` / ``Dict.objects``."""
+    """Admin namespace (Modal ``Volume.objects`` shape)."""
 
     @staticmethod
     def create(
@@ -50,6 +50,8 @@ class RunnerObjects:
     ) -> None:
         if not RUNNER_NAME_RE.fullmatch(name):
             raise ValueError(f"invalid Runner name {name!r}")
+        if not labels:
+            raise ValueError("labels must be a non-empty sequence")
         modal.Dict.objects.create(
             f"{name}-runner-meta",
             allow_existing=allow_existing,
@@ -67,7 +69,7 @@ class RunnerObjects:
             name,
             create_if_missing=True,
             environment_name=environment_name,
-            labels=list(labels or []),
+            labels=list(labels),
             repositories=list(repositories or []),
             max_concurrent=max_concurrent,
             cache=cache,
@@ -151,8 +153,6 @@ class Runner:
         self.hydrated = False
 
     class Job:
-        """One CI job — Sandbox twin (``sb-…``)."""
-
         def __init__(self, sandbox: modal.Sandbox) -> None:
             self.sandbox = sandbox
 
@@ -238,12 +238,11 @@ class Runner:
                 raise ValueError(f"repository must be 'owner/repo', got {repository!r}")
 
             runner.hydrate()
-            with StageClock("has_capacity"):
-                if not runner.has_capacity():
-                    raise ConcurrencyLimitError(
-                        f"Runner {runner.name!r} at max_concurrent="
-                        f"{runner.meta.max_concurrent}"
-                    )
+            if not runner.has_capacity():
+                raise ConcurrencyLimitError(
+                    f"Runner {runner.name!r} at max_concurrent="
+                    f"{runner.meta.max_concurrent}"
+                )
 
             merged_labels = list(dict.fromkeys([*(labels or []), *runner.meta.labels]))
             if not merged_labels:
@@ -268,20 +267,16 @@ class Runner:
 
             use_docker = bool(exp.get("vm_runtime"))
             if image is None:
-                with StageClock("resolve_job_image"):
-                    if runner.meta.job_image_name:
-                        image = modal.Image.from_name(
-                            runner.meta.job_image_name,
-                            environment_name=environment_name
-                            or runner.environment_name,
-                            client=client or runner.client,
-                        )
-                    else:
-                        image = (
-                            Runner.docker_image()
-                            if use_docker
-                            else Runner.default_image()
-                        )
+                if runner.meta.job_image_name:
+                    image = modal.Image.from_name(
+                        runner.meta.job_image_name,
+                        environment_name=environment_name or runner.environment_name,
+                        client=client or runner.client,
+                    )
+                else:
+                    image = (
+                        Runner.docker_image() if use_docker else Runner.default_image()
+                    )
 
             vol_map: dict[
                 str | os.PathLike[str], modal.Volume | modal.CloudBucketMount
@@ -310,34 +305,37 @@ class Runner:
             run_env.setdefault("RUNNER_ALLOW_RUNASROOT", "1")
             run_env[JOB_SPEC_ENV] = spec.model_dump_json()
 
-            with StageClock("sandbox_create"):
-                sandbox = modal.Sandbox.create(
-                    "python",
-                    "-m",
-                    JOB_MODULE,
-                    app=app,
-                    image=image,
-                    env=run_env,
-                    secrets=[github_secret, *(secrets or [])],
-                    volumes=vol_map,
-                    timeout=timeout,
-                    idle_timeout=job_idle,
-                    workdir=workdir,
-                    gpu=gpu,
-                    cloud=cloud,
-                    region=job_region,
-                    cpu=cpu,
-                    memory=memory,
-                    block_network=block_network,
-                    outbound_cidr_allowlist=outbound_cidr_allowlist,
-                    inbound_cidr_allowlist=inbound_cidr_allowlist,
-                    proxy=proxy,
-                    name=name,
-                    tags=merged_tags,
-                    experimental_options=exp or None,
-                    environment_name=environment_name or runner.environment_name,
-                    client=client or runner.client,
-                )
+            job_cpu = cpu if cpu is not None else runner.meta.cpu
+            job_memory = memory if memory is not None else runner.meta.memory
+            job_gpu = gpu if gpu is not None else runner.meta.gpu
+
+            sandbox = modal.Sandbox.create(
+                "python",
+                "-m",
+                JOB_MODULE,
+                app=app,
+                image=image,
+                env=run_env,
+                secrets=[github_secret, *(secrets or [])],
+                volumes=vol_map,
+                timeout=timeout,
+                idle_timeout=job_idle,
+                workdir=workdir,
+                gpu=job_gpu,
+                cloud=cloud,
+                region=job_region,
+                cpu=job_cpu,
+                memory=job_memory,
+                block_network=block_network,
+                outbound_cidr_allowlist=outbound_cidr_allowlist,
+                inbound_cidr_allowlist=inbound_cidr_allowlist,
+                proxy=proxy,
+                name=name,
+                tags=merged_tags,
+                experimental_options=exp or None,
+                environment_name=environment_name or runner.environment_name,
+                client=client or runner.client,
+            )
             return cls(sandbox)
 
         @property
@@ -369,7 +367,6 @@ class Runner:
             return self.sandbox.returncode
 
         def poll(self) -> int | None:
-            """Exit code if finished, else ``None`` (like ``Sandbox.poll``)."""
             return self.sandbox.poll()
 
         def __repr__(self) -> str:
@@ -377,22 +374,26 @@ class Runner:
 
     @classmethod
     def control_plane_image(cls) -> modal.Image:
-        """Server image — install ``runner-modal`` from GitHub (until PyPI)."""
         return (
             modal.Image.debian_slim(python_version="3.12")
             .apt_install("git")
-            .uv_pip_install(PACKAGE_GIT)
+            .uv_pip_install(PACKAGE_SPEC)
         )
 
     @classmethod
     def install_actions_runner(
-        cls, image: modal.Image, *, runner_version: str = DEFAULT_RUNNER_VERSION
+        cls,
+        image: modal.Image,
+        *,
+        runner_version: str = DEFAULT_RUNNER_VERSION,
+        runner_sha256: str = DEFAULT_RUNNER_SHA256,
     ) -> modal.Image:
-        """Layer the GitHub Actions runner binary onto an image."""
+        """Download Actions runner tarball and verify SHA-256 before extract."""
         return image.run_commands(
             f"curl -fsSL -o /tmp/actions-runner.tar.gz "
             f"https://github.com/actions/runner/releases/download/"
             f"v{runner_version}/actions-runner-linux-x64-{runner_version}.tar.gz",
+            f"echo '{runner_sha256}  /tmp/actions-runner.tar.gz' | sha256sum -c -",
             "mkdir -p /actions-runner",
             "tar -xzf /tmp/actions-runner.tar.gz -C /actions-runner",
             "rm /tmp/actions-runner.tar.gz",
@@ -403,7 +404,6 @@ class Runner:
     def default_image(
         cls, *, runner_version: str = DEFAULT_RUNNER_VERSION
     ) -> modal.Image:
-        """gVisor job image with Actions runner (CPU/GPU)."""
         base = (
             modal.Image.debian_slim(python_version="3.12")
             .apt_install(
@@ -417,7 +417,7 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_pip_install(PACKAGE_GIT)
+            .uv_pip_install(PACKAGE_SPEC)
             .env({"RUNNER_ALLOW_RUNASROOT": "1"})
         )
         return cls.install_actions_runner(base, runner_version=runner_version)
@@ -426,7 +426,6 @@ class Runner:
     def docker_image(
         cls, *, runner_version: str = DEFAULT_RUNNER_VERSION
     ) -> modal.Image:
-        """VM job image with dockerd (no GPU)."""
         base = (
             modal.Image.from_registry("ubuntu:24.04")
             .env({"DEBIAN_FRONTEND": "noninteractive", "RUNNER_ALLOW_RUNASROOT": "1"})
@@ -441,7 +440,7 @@ class Runner:
                 "unzip",
                 "zip",
             )
-            .uv_pip_install(PACKAGE_GIT)
+            .uv_pip_install(PACKAGE_SPEC)
         )
         return cls.install_actions_runner(base, runner_version=runner_version)
 
@@ -464,12 +463,12 @@ class Runner:
         compute_region: str | Sequence[str] | None = None,
         routing_region: str = "us-east",
         cloud: str | None = None,
-        min_containers: int = 1,
+        min_containers: int = 0,
         max_containers: int | None = None,
         unauthenticated: bool = True,
-        gpu: str | list[str] | None = None,
-        cpu: float | tuple[float, float] | None = None,
-        memory: int | tuple[int, int] | None = None,
+        gpu: str | None = None,
+        cpu: float | None = None,
+        memory: int | None = None,
         target_concurrency: int | None = None,
         buffer_containers: int | None = None,
         scaleup_window: int | None = None,
@@ -489,7 +488,10 @@ class Runner:
 
         Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
         ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the Server only.
-        ``repositories`` is required — webhook admission is fail-closed.
+        ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
+        ``cpu`` / ``memory`` / ``gpu`` are default Job Sandbox resources (one pool =
+        one resource profile). The control-plane Server uses fixed small sizing.
+        ``min_containers`` defaults to ``0`` (scale-to-zero control plane).
         """
         if not RUNNER_NAME_RE.fullmatch(name):
             raise ValueError(f"invalid Runner name {name!r}")
@@ -502,11 +504,14 @@ class Runner:
             raise ValueError(
                 "repositories must be a non-empty sequence of 'owner/repo'"
             )
+        if not labels:
+            raise ValueError("labels must be a non-empty sequence")
         repos: list[str] = []
         for repo in repositories:
             if repo.count("/") != 1:
                 raise ValueError(f"repository must be 'owner/repo', got {repo!r}")
             repos.append(repo)
+        label_list = list(labels)
         github_name = github_secret.name
         if not github_name:
             raise ValueError(
@@ -522,7 +527,7 @@ class Runner:
             name,
             create_if_missing=True,
             environment_name=environment_name,
-            labels=labels,
+            labels=label_list,
             repositories=repos,
             max_concurrent=max_concurrent,
             cache=cache,
@@ -558,7 +563,7 @@ class Runner:
 
         runner.meta = RunnerMeta(
             name=name,
-            labels=list(labels) if labels is not None else list(prior.labels),
+            labels=label_list,
             repositories=repos,
             max_concurrent=(
                 max_concurrent if max_concurrent is not None else prior.max_concurrent
@@ -584,6 +589,9 @@ class Runner:
                 if runner_group_id is not None
                 else prior.runner_group_id
             ),
+            cpu=cpu if cpu is not None else prior.cpu,
+            memory=memory if memory is not None else prior.memory,
+            gpu=gpu if gpu is not None else prior.gpu,
         )
         runner.persist_meta()
 
@@ -611,9 +619,6 @@ class Runner:
             min_containers=min_containers,
             max_containers=max_containers,
             unauthenticated=unauthenticated,
-            gpu=gpu,
-            cpu=cpu,
-            memory=memory,
             target_concurrency=target_concurrency,
             buffer_containers=buffer_containers,
             scaleup_window=scaleup_window,
@@ -638,7 +643,6 @@ class Runner:
         cache: bool = False,
         client: modal.Client | None = None,
     ) -> Self:
-        """Reference a Runner by name (Volume-shaped; hydrate on first use)."""
         if not RUNNER_NAME_RE.fullmatch(name):
             raise ValueError(f"invalid Runner name {name!r}")
         return cls(
@@ -663,7 +667,6 @@ class Runner:
         cache: bool = False,
         client: modal.Client | None = None,
     ) -> Generator[Self, None, None]:
-        """Anonymous Runner for the duration of the context (Volume.ephemeral)."""
         name = f"ephemeral_{uuid.uuid4().hex}"
         runner = cls.from_name(
             name,
@@ -726,7 +729,7 @@ class Runner:
             self.volume = None
 
     def persist_meta(self) -> None:
-        """Write ``self.meta`` to the Dict (does not reload over local meta)."""
+        """Persist ``self.meta`` without reloading from the Dict."""
         if self.meta_dict is None:
             self.meta_dict = modal.Dict.from_name(
                 f"{self.name}-runner-meta",
@@ -754,14 +757,25 @@ class Runner:
         )
 
     def admits(self, labels: Sequence[str], repository: str) -> bool:
-        """Whether webhook labels and repository match this pool (after hydrate)."""
+        return self.admit_reason(labels, repository) is None
+
+    def admit_reason(self, labels: Sequence[str], repository: str) -> str | None:
+        """``None`` if admitted; otherwise a stable ignore reason string."""
         self.hydrate()
         allowed = set(self.meta.repositories)
-        if not allowed or repository not in allowed:
-            return False
+        if not allowed:
+            return "no_repositories"
+        if repository not in allowed:
+            return "repository_mismatch"
         pool = set(self.meta.labels)
+        if not pool:
+            return "empty_pool_labels"
         job_labels = set(labels)
-        return bool(pool) and "self-hosted" in job_labels and pool <= job_labels
+        if "self-hosted" not in job_labels:
+            return "missing_self_hosted"
+        if not pool <= job_labels:
+            return "label_mismatch"
+        return None
 
     def job_app(self) -> modal.App:
         """App handle for webhook ``Job.create`` (explicit; no ambient context)."""
@@ -778,7 +792,6 @@ class Runner:
 
     @property
     def url(self) -> str | None:
-        """Server URL after deploy, or ``None`` if not ready."""
         self.hydrate()
         if not self.meta.app_name or not self.meta.server_name:
             return None
@@ -800,7 +813,7 @@ class Runner:
         )
 
     def has_capacity(self, *, app_id: str | None = None) -> bool:
-        """Soft LBYL concurrency check (list-then-create; not a reservation)."""
+        """Soft list-then-create check (not a reservation)."""
         self.hydrate()
         limit = self.meta.max_concurrent
         if limit is None:
