@@ -15,6 +15,26 @@ uv add git+https://github.com/modal-projects/runner-modal.git@v0.1.0
 Deploy from a checkout (or editable install) so Image builds can
 `add_local_python_source("runner_modal")`. PyPI is not set up yet.
 
+## Agent skills
+
+Install all integrator skills for Cursor, Claude Code, and
+[other agents](https://skills.sh):
+
+```bash
+npx skills add modal-projects/runner-modal --all
+npx skills add modal-projects/runner-modal --all -g
+```
+
+Project (`--all`) writes into the current repo. `-g` installs the same set
+into your user skill directories.
+
+| Skill | When |
+|-------|------|
+| `runner-modal-deploy` | Secrets, `Runner.create`, webhook, teardown |
+| `runner-modal-workflows` | `runs-on`, unique pins, hosted vs Modal |
+| `runner-modal-images` | `{name}-job`, GPU, `vm_runtime`, `/cache` |
+| `runner-modal-troubleshoot` | 401 / 204 / 503, admit, queued forever |
+
 ## Quick start
 
 ### 1. Secrets
