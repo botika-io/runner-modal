@@ -525,3 +525,23 @@ def test_retry_uses_unique_registration_name_and_same_sandbox_name() -> None:
         first_spec = JobSpec.model_validate_json(first.kwargs["env"][JOB_SPEC_ENV])
         second_spec = JobSpec.model_validate_json(second.kwargs["env"][JOB_SPEC_ENV])
         assert first_spec.runner_name != second_spec.runner_name
+
+
+def test_cache_volume_is_v2_and_read_only_in_jobs() -> None:
+    runner = Runner.from_name("p", labels=POOL, repositories=[REPO], cache=True)
+    with patch("runner_modal.runner.modal.Volume.from_name") as volume:
+        runner.bind_volume()
+        assert volume.call_args.kwargs["version"] == 2
+        assert volume.call_args.args == ("p-cache",)
+    with (
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "has_capacity", return_value=True),
+        patch.object(Runner, "default_image", return_value=MagicMock()),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
+        patch("runner_modal.runner.modal.Sandbox.create") as create,
+    ):
+        Runner.Job.create(runner, repository=REPO, github_token="registration-token")
+        volume.return_value.with_mount_options.assert_called_once_with(read_only=True)
+        assert create.call_args.kwargs["volumes"] == {
+            "/cache": volume.return_value.with_mount_options.return_value
+        }

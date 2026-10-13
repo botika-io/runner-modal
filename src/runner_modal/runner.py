@@ -73,6 +73,7 @@ class RunnerObjects:
             modal.Volume.objects.create(
                 f"{name}-cache",
                 allow_existing=True,
+                version=2,
                 environment_name=environment_name,
                 client=client,
             )
@@ -303,7 +304,7 @@ class Runner:
             if runner.volume is not None and "/cache" not in {
                 str(path) for path in vol_map
             }:
-                vol_map["/cache"] = runner.volume
+                vol_map["/cache"] = runner.volume.with_mount_options(read_only=True)
 
             merged_tags: dict[str, str] = {
                 **(tags or {}),
@@ -631,13 +632,6 @@ class Runner:
         vol_map: dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount] = (
             dict(volumes) if volumes else {}
         )
-        if (
-            cache
-            and runner.volume is not None
-            and not any(str(path) == "/cache" for path in vol_map)
-        ):
-            vol_map["/cache"] = runner.volume
-
         run_env = dict(env or {})
         run_env["RUNNER_MODAL_NAME"] = name
 
@@ -760,6 +754,7 @@ class Runner:
                 f"{self.name}-cache",
                 environment_name=self.environment_name,
                 create_if_missing=True,
+                version=2,
                 client=self.client,
             )
         else:

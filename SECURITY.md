@@ -37,7 +37,7 @@ Each provisioning attempt gets a unique GitHub registration name; the Modal Sand
 
 ## Shared `/cache`
 
-`cache=True` mounts one Volume at `/cache` for all jobs in the pool. Same-pool jobs can read/write each other’s cache. Default is `cache=False`. This is not the GitHub Actions `actions/cache` service.
+`cache=True` mounts a v2 Volume at `/cache` read-only for jobs in the pool. Cache writers must publish separately using an authorized Modal credential. The webhook does not mount the cache. Default is `cache=False`; this is independent of GitHub Actions cache. Existing v1 cache Volumes must be migrated before enabling the fork’s v2 cache behavior.
 
 ## Soft capacity
 

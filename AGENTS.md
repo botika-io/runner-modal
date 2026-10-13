@@ -62,7 +62,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 
 - Modules by responsibility: `runner` / `meta` / `entrypoint` / `webhook` / `exceptions`. Keep nested `Job` if it matches the Modal twin.
 - Images: install runtime deps with ``uv_pip_install(*CONTROL_PLANE_DEPS|JOB_DEPS)`` and bake ``add_local_python_source("runner_modal", copy=True)`` until a PyPI release. ``PACKAGE_SPEC`` documents the operator ``uv add`` pin. Named Job Image ``"{name}-job"`` is published at ``Runner.create``; webhook ``Job.create`` uses ``Image.from_name``. No Path / ``add_local_dir``.
-- Default `cache=False`. Shared `/cache` Volume is same-pool only — not Actions cache.
+- Default `cache=False`. Shared `/cache` uses a v2 Volume, mounted read-only in jobs. Only separately authorized publishers write it; the webhook does not mount it.
 - One unit test file per impl file (`test_runner.py`, `test_entrypoint.py`, `test_webhook.py`, `test_exceptions.py`, `test_meta.py`).
 - Test HMAC failure, delivery claim, admission (repo + labels), and capacity semantics — not only exports / signatures.
 - Retries (tenacity): transient network / timeouts / 5xx only. Never retry 401 / 403 / validation errors.
