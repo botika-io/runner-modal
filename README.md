@@ -32,7 +32,7 @@ into your user skill directories.
 |-------|------|
 | `runner-modal-deploy` | Secrets, `Runner.create`, webhook, teardown |
 | `runner-modal-workflows` | `runs-on`, unique pins, hosted vs Modal |
-| `runner-modal-images` | `{name}-job`, GPU, `vm_runtime`, `/cache` |
+| `runner-modal-images` | `{name}-job`, GPU, `runtime`, `/cache` |
 | `runner-modal-troubleshoot` | 401 / 204 / 503, admit, queued forever |
 
 ## Quick start
@@ -88,7 +88,11 @@ unique `job-${{ github.run_id }}-${{ github.job }}` pin.
 | [`examples/gpu/`](examples/gpu/) | CUDA / ML (`gpu="T4"` Job defaults) |
 
 GPU pool = separate App. Docker-in-CI:
-`experimental_options={"vm_runtime": True}` on `Runner.create` (no GPU).
+`runtime="vm"` on `Runner.create` or `Runner.Job.create` (no GPU).
+CPU and memory accept `(request, limit)` tuples, for example
+`memory=(8192, 16384)` reserves 8 GiB and allows bursting up to 16 GiB.
+Requires Modal SDK 1.6+. Pass `job_image=` to `Runner.create` to publish a custom
+job image; `image=` configures the webhook image.
 `cpu` / `memory` / `gpu` are **Job** Sandbox defaults; the webhook Function
 stays small (`buffer_containers=1` by default).
 

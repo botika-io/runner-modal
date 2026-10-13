@@ -117,7 +117,7 @@ class WorkflowJobEvent(BaseModel):
             payload = values[0].encode()
 
         event = cls.model_validate_json(payload)
-        if event.action not in ("queued", "cancelled"):
+        if event.action not in ("queued", "completed"):
             return None
 
         return event.model_copy(update={"delivery_id": delivery})
@@ -307,7 +307,7 @@ class WebhookApp:
             )
             return self.ignore(reason)
 
-        if event.action == "cancelled":
+        if event.action == "completed":
             runner.hydrate()
             app_name = runner.meta.app_name
             if app_name:
@@ -319,14 +319,14 @@ class WebhookApp:
                         client=runner.client,
                     ).terminate()
             log.info(
-                "webhook cancelled runner=%s delivery=%s job_id=%s",
+                "webhook completed runner=%s delivery=%s job_id=%s",
                 self.runner_name,
                 event.delivery_id,
                 event.job_id,
             )
             return Response(
                 status_code=status.HTTP_204_NO_CONTENT,
-                headers=self.outcome("cancelled"),
+                headers=self.outcome("completed"),
             )
 
         existing = self.deliveries.claim(event.delivery_id)

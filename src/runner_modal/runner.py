@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import PurePosixPath
-from typing import ClassVar, Self
+from typing import ClassVar, Literal, Self
 
 import modal
 
@@ -231,8 +231,9 @@ class Runner:
             timeout: int = 60 * 60,
             idle_timeout: int | None = None,
             workdir: str | None = None,
-            cpu: float | None = None,
-            memory: int | None = None,
+            cpu: float | tuple[float, float] | None = None,
+            memory: int | tuple[int, int] | None = None,
+            runtime: Literal["gvisor", "vm"] | None = None,
             gpu: str | None = None,
             cloud: str | None = None,
             region: str | Sequence[str] | None = None,
@@ -282,7 +283,8 @@ class Runner:
                 else runner.meta.github_enterprise_domain
             )
 
-            use_docker = bool(exp.get("vm_runtime"))
+            job_runtime = runtime if runtime is not None else runner.meta.runtime
+            use_docker = job_runtime == "vm"
             if image is None:
                 if runner.meta.job_image_name:
                     image = modal.Image.from_name(
@@ -343,6 +345,7 @@ class Runner:
                 region=job_region,
                 cpu=job_cpu,
                 memory=job_memory,
+                runtime=job_runtime,
                 block_network=block_network,
                 outbound_cidr_allowlist=outbound_cidr_allowlist,
                 inbound_cidr_allowlist=inbound_cidr_allowlist,
@@ -350,7 +353,6 @@ class Runner:
                 name=name,
                 tags=merged_tags,
                 experimental_options=exp or None,
-                environment_name=environment_name or runner.environment_name,
                 client=client or runner.client,
             )
             return cls(sandbox)
@@ -429,7 +431,7 @@ class Runner:
         cls, *, runner_version: str = DEFAULT_RUNNER_VERSION
     ) -> modal.Image:
         base = (
-            modal.Image.from_registry("ubuntu:24.04")
+            modal.Image.from_registry("ubuntu:24.04", add_python="3.12")
             .env({"DEBIAN_FRONTEND": "noninteractive", "RUNNER_ALLOW_RUNASROOT": "1"})
             .apt_install(
                 "curl",
@@ -460,6 +462,7 @@ class Runner:
         max_concurrent: int | None = None,
         cache: bool = False,
         image: modal.Image | None = None,
+        job_image: modal.Image | None = None,
         volumes: Mapping[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
         | None = None,
         env: dict[str, str | None] | None = None,
@@ -481,15 +484,17 @@ class Runner:
         github_enterprise_domain: str | None = None,
         # Job Sandbox defaults (not control-plane sizing).
         gpu: str | None = None,
-        cpu: float | None = None,
-        memory: int | None = None,
+        cpu: float | tuple[float, float] | None = None,
+        memory: int | tuple[int, int] | None = None,
+        runtime: Literal["gvisor", "vm"] | None = None,
     ) -> Self:
         """Register ASGI webhook Function on ``app`` (definition-time).
 
         Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
         ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the webhook Function only.
         ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
-        ``cpu`` / ``memory`` / ``gpu`` are default Job Sandbox resources.
+        ``job_image`` overrides the default job recipe; ``image`` configures the webhook.
+        ``cpu`` / ``memory`` / ``gpu`` / ``runtime`` are default Job Sandbox resources.
         ``min_containers`` defaults to ``0``; ``buffer_containers`` defaults to ``1``.
         """
         if not RUNNER_NAME_RE.fullmatch(name):
@@ -546,8 +551,11 @@ class Runner:
             if experimental_options is not None
             else dict(prior.experimental_options or {})
         )
+        job_runtime = runtime if runtime is not None else prior.runtime
         job_image_name = f"{name}-job"
-        recipe = cls.docker_image() if exp.get("vm_runtime") else cls.default_image()
+        recipe = job_image
+        if recipe is None:
+            recipe = cls.docker_image() if job_runtime == "vm" else cls.default_image()
         build_app = modal.App.lookup(
             app.name,
             create_if_missing=True,
@@ -591,6 +599,7 @@ class Runner:
             cpu=cpu if cpu is not None else prior.cpu,
             memory=memory if memory is not None else prior.memory,
             gpu=gpu if gpu is not None else prior.gpu,
+            runtime=job_runtime,
         )
         runner.persist_meta()
 

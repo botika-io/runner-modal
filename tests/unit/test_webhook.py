@@ -105,7 +105,7 @@ def test_hmac_requires_delivery_and_signature_headers() -> None:
         )
 
 
-def test_event_parses_queued_and_ignores_completed() -> None:
+def test_event_parses_queued_and_ignores_in_progress() -> None:
     body = json.dumps(
         {
             "action": "queued",
@@ -134,7 +134,7 @@ def test_event_parses_queued_and_ignores_completed() -> None:
 
     done = json.dumps(
         {
-            "action": "completed",
+            "action": "in_progress",
             "workflow_job": {"id": 1, "run_id": 2, "labels": []},
             "repository": {"full_name": "a/b"},
         }
@@ -409,7 +409,7 @@ def test_bad_hmac_returns_401() -> None:
 def test_ignored_event_returns_204_with_reason() -> None:
     body = json.dumps(
         {
-            "action": "completed",
+            "action": "in_progress",
             "workflow_job": {"id": 1, "run_id": 1, "labels": []},
             "repository": {"full_name": "a/b"},
         }
@@ -604,10 +604,10 @@ def test_empty_pool_labels_returns_204() -> None:
         create.assert_not_called()
 
 
-def test_cancelled_terminates_matching_job() -> None:
+def test_completed_terminates_matching_job() -> None:
     body = json.dumps(
         {
-            "action": "cancelled",
+            "action": "completed",
             "workflow_job": {
                 "id": 42,
                 "run_id": 1,
@@ -644,14 +644,14 @@ def test_cancelled_terminates_matching_job() -> None:
             },
         )
         assert resp.status_code == 204
-        assert resp.headers.get("X-Runner-Modal-Outcome") == "cancelled"
+        assert resp.headers.get("X-Runner-Modal-Outcome") == "completed"
         job.terminate.assert_called_once()
 
 
-def test_cancelled_skips_repo_mismatch() -> None:
+def test_completed_skips_repo_mismatch() -> None:
     body = json.dumps(
         {
-            "action": "cancelled",
+            "action": "completed",
             "workflow_job": {
                 "id": 42,
                 "run_id": 1,

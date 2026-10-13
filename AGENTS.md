@@ -20,7 +20,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - No free public helpers (`spawn`, `parse_labels`, pools, ASGI attach helpers). If a concern is a lead responsibility, put it on an entity (or a method on the owning entity).
 - One `Runner.create` per App. Control plane is a Runner-registered Function `@modal.asgi_app` named `webhook` with `@modal.concurrent`. Runner identity is `RUNNER_MODAL_NAME`. Inputs queue on cold start — do not use Modal Server for GitHub webhooks (503 on zero→one).
 - Soft capacity (`has_capacity` / `max_concurrent`) is **soft** (list-then-create TOCTOU). Document it as soft; never present it as a linearizable lock.
-- **Job resources:** Modal-twin flat kwargs — `cpu`, `memory`, `gpu`, `experimental_options` (e.g. `{"vm_runtime": True}` for Docker/VM). Do **not** invent `ResourceSpec | DockerResources`, xor validators, or `isinstance` resource dispatch. Prefer `docker_image()` when `vm_runtime` is set; let Modal enforce GPU vs VM limits.
+- **Job resources:** Modal-twin flat kwargs — `cpu`, `memory`, `gpu`, `runtime`, `experimental_options`. CPU and memory also accept `(request, limit)` tuples. Do **not** invent `ResourceSpec | DockerResources`, xor validators, or `isinstance` resource dispatch. Prefer `docker_image()` when `runtime="vm"`; let Modal enforce GPU vs VM limits.
 - **Admission:** `repositories` is required (non-empty). `admit_reason(labels, repository)` fail-closed. No admit-all mode. `Job.create` enforces the same rules.
 
 ## Explicit config (Modal twin)

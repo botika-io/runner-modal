@@ -63,7 +63,7 @@ def main(
         runner.hydrate()
 
     job_image_name = f"{POOL}-job"
-    use_docker = bool((runner.meta.experimental_options or {}).get("vm_runtime"))
+    use_docker = runner.meta.runtime == "vm"
     recipe = Runner.docker_image() if use_docker else Runner.default_image()
     with lap(f"Image.publish → {job_image_name}"):
         recipe.build(parent).publish(job_image_name)

@@ -206,7 +206,10 @@ def test_job_create_without_named_image_builds_default() -> None:
         default_image.assert_called_once()
 
 
-def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> None:
+@pytest.mark.parametrize("custom_image", [False, True])
+def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only(
+    custom_image: bool,
+) -> None:
     app = MagicMock()
     app.name = "acme-ci"
     github = MagicMock()
@@ -222,7 +225,7 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> N
         patch.object(Runner, "from_name", return_value=runner_handle),
         patch.object(runner_handle, "hydrate"),
         patch.object(runner_handle, "persist_meta") as persist,
-        patch.object(Runner, "default_image", return_value=recipe),
+        patch.object(Runner, "docker_image", return_value=recipe) as docker,
         patch.object(Runner, "control_plane_image", return_value=MagicMock()),
         patch("runner_modal.runner.modal.App.lookup", return_value=MagicMock()),
         patch(
@@ -242,8 +245,10 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> N
             webhook_secret=webhook,
             repositories=["acme/api"],
             labels=["self-hosted", "modal", "acme"],
-            cpu=2.0,
-            gpu="T4",
+            cpu=(2.0, 4.0),
+            memory=(8192, 16384),
+            runtime="vm",
+            job_image=recipe if custom_image else None,
         )
         assert out is runner_handle
         built.publish.assert_called_once_with(
@@ -254,8 +259,10 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only() -> N
         assert runner_handle.meta.webhook_secret_name == "github-webhook"
         assert runner_handle.meta.webhook_function == "webhook"
         assert runner_handle.meta.repositories == ["acme/api"]
-        assert runner_handle.meta.cpu == 2.0
-        assert runner_handle.meta.gpu == "T4"
+        assert runner_handle.meta.cpu == (2.0, 4.0)
+        assert runner_handle.meta.memory == (8192, 16384)
+        assert runner_handle.meta.runtime == "vm"
+        assert docker.call_count == (0 if custom_image else 1)
         persist.assert_called_once()
         assert register.call_args.kwargs["secrets"] == [webhook]
         assert register.call_args.kwargs["name"] == "webhook"
@@ -336,9 +343,11 @@ def test_job_create_docker_sets_vm_runtime() -> None:
             repository=REPO,
             labels=["job-1"],
             github_secret=MagicMock(),
-            experimental_options={"vm_runtime": True},
+            runtime="vm",
         )
-        assert create.call_args.kwargs["experimental_options"]["vm_runtime"] is True
+        assert create.call_args.kwargs["runtime"] == "vm"
+        assert create.call_args.kwargs["experimental_options"] is None
+        assert "environment_name" not in create.call_args.kwargs
         spec = JobSpec.model_validate_json(create.call_args.kwargs["env"][JOB_SPEC_ENV])
         assert spec.use_docker is True
 
@@ -402,3 +411,35 @@ def test_images_install_runtime_deps_and_local_package() -> None:
             Runner.default_image()
         slim.uv_pip_install.assert_called()
         slim.add_local_python_source.assert_called_with("runner_modal", copy=True)
+
+
+@pytest.mark.parametrize("override", [None, "gvisor"])
+def test_job_inherits_persisted_vm_and_burst_limits(override: str | None) -> None:
+    runner = Runner.from_name("burst", labels=POOL, repositories=[REPO])
+    runner.meta = type(runner.meta).model_validate_json(
+        runner.meta.model_copy(
+            update={"runtime": "vm", "cpu": (2.0, 4.0), "memory": (8192, 16384)}
+        ).model_dump_json()
+    )
+    with (
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "has_capacity", return_value=True),
+        patch("runner_modal.runner.modal.Sandbox.create") as create,
+        patch.object(Runner, "docker_image") as docker,
+        patch.object(Runner, "default_image") as default,
+    ):
+        if override is None:
+            Runner.Job.create(runner, repository=REPO, github_secret=MagicMock())
+        else:
+            Runner.Job.create(
+                runner, repository=REPO, github_secret=MagicMock(), runtime="gvisor"
+            )
+        kwargs = create.call_args.kwargs
+        assert kwargs["runtime"] == (override or "vm")
+        assert kwargs["cpu"] == (2.0, 4.0)
+        assert kwargs["memory"] == (8192, 16384)
+        assert kwargs["volumes"] == {}
+        spec = JobSpec.model_validate_json(kwargs["env"][JOB_SPEC_ENV])
+        assert spec.use_docker == (override is None)
+        assert docker.call_count == (1 if override is None else 0)
+        assert default.call_count == (0 if override is None else 1)

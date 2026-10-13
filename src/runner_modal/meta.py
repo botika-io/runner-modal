@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 META_KEY = "runner"
@@ -23,13 +25,13 @@ PACKAGE_SPEC = "git+https://github.com/modal-projects/runner-modal.git@v0.1.0"
 CONTROL_PLANE_DEPS = (
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
-    "modal>=1.5.2,<2",
+    "modal>=1.6.0,<2",
     "pydantic>=2.0",
     "tenacity>=9.0.0",
 )
 JOB_DEPS = (
     "httpx>=0.28.0",
-    "modal>=1.5.2,<2",
+    "modal>=1.6.0,<2",
     "pydantic>=2.0",
     "tenacity>=9.0.0",
 )
@@ -54,9 +56,10 @@ class RunnerMeta(BaseModel):
     experimental_options: dict[str, object] | None = None
     runner_group_id: int = 1
     # Job Sandbox defaults for webhook create when Job.create omits resources.
-    cpu: float | None = None
-    memory: int | None = None
+    cpu: float | tuple[float, float] | None = None
+    memory: int | tuple[int, int] | None = None
     gpu: str | None = None
+    runtime: Literal["gvisor", "vm"] | None = None
 
 
 class RunnerInfo(BaseModel):
