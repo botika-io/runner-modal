@@ -493,7 +493,7 @@ class Runner:
         Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
         ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the webhook Function only.
         ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
-        ``job_image`` overrides the default job recipe; ``image`` configures the webhook.
+        ``job_image`` overrides the job recipe; ``image`` configures the webhook.
         ``cpu`` / ``memory`` / ``gpu`` / ``runtime`` are default Job Sandbox resources.
         ``min_containers`` defaults to ``0``; ``buffer_containers`` defaults to ``1``.
         """
