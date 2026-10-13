@@ -19,8 +19,9 @@ invent a second resource profile on the same App.
 
 - Pin with `uv add git+https://github.com/modal-projects/runner-modal.git@v0.1.0`.
   Deploy from a checkout so Images can `add_local_python_source("runner_modal")`.
-- Two named Secrets, never one: `github-token` (`GITHUB_TOKEN`, Jobs only)
-  and `github-webhook` (`WEBHOOK_SECRET`, webhook Function only).
+- Two named Secrets, never one: `github-token` (`GITHUB_TOKEN`, controller only)
+  and `github-webhook` (`WEBHOOK_SECRET`, webhook Function only). Jobs receive
+  only a single-use JIT configuration, never either reusable credential.
 - One `Runner.create` per `modal.App` = one resource profile. GPU is a
   separate App. `repositories` required. Labels must include `self-hosted`.
 - `cpu` / `memory` / `gpu` are Job defaults, not webhook Function size.

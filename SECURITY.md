@@ -20,12 +20,16 @@ Admission is fail-closed: repository must be in `repositories`, pool labels must
 
 Use **two** named Modal Secrets:
 
-1. **`github_secret`** — `GITHUB_TOKEN` only — mounted on Job Sandboxes
+1. **`github_secret`** — `GITHUB_TOKEN` only — mounted on the webhook Function only
 2. **`webhook_secret`** — `WEBHOOK_SECRET` only — mounted on the webhook Function
+
+The controller mints a single-use JIT configuration and passes it to the Sandbox in an ephemeral Secret. The reusable registration token never enters a Job Sandbox. The bootstrap removes the JIT environment variable before starting Docker or the runner.
 
 Never put both keys in one Secret. Workflow code on a Job can read every env key Modal mounts. If `WEBHOOK_SECRET` is present in a Job, a hostile workflow can forge control-plane requests.
 
 Prefer a fine-scoped GitHub App or PAT limited to runner JIT / admin on the allowlisted repos.
+
+Each provisioning attempt gets a unique GitHub registration name; the Modal Sandbox keeps its deterministic job name. Definite provisioning rejections delete that attempt’s registration by ID. Ambiguous transport errors retain it because a Sandbox may already be using it; a retry uses a new registration name and the existing named Sandbox recovery path.
 
 ## Public webhook URL
 
@@ -43,9 +47,11 @@ Prefer a fine-scoped GitHub App or PAT limited to runner JIT / admin on the allo
 
 After a Job Sandbox is created, the control plane binds `object_id` onto the delivery claim before HTTP 200. Pending claims **with** `object_id` are never TTL-reclaimed. If bind fails, the Job is terminated when possible; the claim is released only after a confirmed terminate. Otherwise the claim is left in place and GitHub receives HTTP 503. Redeploying `Runner.create` overwrites Runner meta (last deploy wins).
 
+Completion is recorded durably by repository and job ID before attempting termination. Queued handlers check that marker before creating and after binding a Sandbox, terminating jobs created concurrently with completion. Markers are retained in the delivery Dict; no request-path sweep deletes them.
+
 ## Fork PRs and untrusted workflows
 
-Self-hosted runners execute workflow steps with access to the Job environment (including `GITHUB_TOKEN`). Treat fork PRs and untrusted workflows as hostile. Prefer private repos, trusted branches, and unique `runs-on` pins (`job-${{ github.run_id }}-${{ github.job }}`).
+Self-hosted runners execute workflow steps with access to the Job environment (including any workflow-supplied secrets). Treat fork PRs and untrusted workflows as hostile. Prefer private repos, trusted branches, and unique `runs-on` pins (`job-${{ github.run_id }}-${{ github.job }}`).
 
 ## Reporting issues
 

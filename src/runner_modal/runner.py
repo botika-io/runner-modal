@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
-import time
 import uuid
 from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -13,7 +13,7 @@ from typing import ClassVar, Literal, Self
 
 import modal
 
-from runner_modal.entrypoint import JOB_SPEC_ENV, JobSpec
+from runner_modal.entrypoint import JIT_CONFIG_ENV, JOB_SPEC_ENV, JobSpec
 from runner_modal.exceptions import ConcurrencyLimitError
 from runner_modal.meta import (
     CONTROL_PLANE_DEPS,
@@ -215,7 +215,7 @@ class Runner:
             runner: Runner,
             *,
             repository: str,
-            github_secret: modal.Secret,
+            github_token: str,
             app: modal.App | None = None,
             labels: Sequence[str] | None = None,
             runner_group_id: int | None = None,
@@ -249,8 +249,8 @@ class Runner:
         ) -> Runner.Job:
             """Create a job Sandbox (eager) — same role as ``modal.Sandbox.create``.
 
-            ``github_secret`` must provide ``GITHUB_TOKEN``. JIT mint runs inside
-            the Sandbox via ``python -m runner_modal.entrypoint``.
+            Mint JIT in the trusted caller using ``github_token``. Only the
+            single-use configuration is mounted into the job Sandbox.
             """
             if repository.count("/") != 1:
                 raise ValueError(f"repository must be 'owner/repo', got {repository!r}")
@@ -316,9 +316,13 @@ class Runner:
                 repository=repository,
                 labels=merged_labels,
                 runner_group_id=group_id,
-                runner_name=runner_name or name or f"modal-{int(time.time())}",
+                runner_name=runner_name or f"{name or 'modal'}-{uuid.uuid4().hex}",
                 github_enterprise_domain=domain,
                 use_docker=use_docker,
+            )
+            registration = spec.mint_jitconfig(token=github_token)
+            jit_secret = modal.Secret.from_dict(
+                {JIT_CONFIG_ENV: registration.encoded_jit_config}
             )
             run_env = dict(env or {})
             run_env.setdefault("RUNNER_ALLOW_RUNASROOT", "1")
@@ -328,33 +332,53 @@ class Runner:
             job_memory = memory if memory is not None else runner.meta.memory
             job_gpu = gpu if gpu is not None else runner.meta.gpu
 
-            sandbox = modal.Sandbox.create(
-                "python",
-                "-m",
-                JOB_MODULE,
-                app=app,
-                image=image,
-                env=run_env,
-                secrets=[github_secret, *(secrets or [])],
-                volumes=vol_map,
-                timeout=timeout,
-                idle_timeout=job_idle,
-                workdir=workdir,
-                gpu=job_gpu,
-                cloud=cloud,
-                region=job_region,
-                cpu=job_cpu,
-                memory=job_memory,
-                runtime=job_runtime,
-                block_network=block_network,
-                outbound_cidr_allowlist=outbound_cidr_allowlist,
-                inbound_cidr_allowlist=inbound_cidr_allowlist,
-                proxy=proxy,
-                name=name,
-                tags=merged_tags,
-                experimental_options=exp or None,
-                client=client or runner.client,
-            )
+            try:
+                sandbox = modal.Sandbox.create(
+                    "python",
+                    "-m",
+                    JOB_MODULE,
+                    app=app,
+                    image=image,
+                    env=run_env,
+                    secrets=[jit_secret, *(secrets or [])],
+                    volumes=vol_map,
+                    timeout=timeout,
+                    idle_timeout=job_idle,
+                    workdir=workdir,
+                    gpu=job_gpu,
+                    cloud=cloud,
+                    region=job_region,
+                    cpu=job_cpu,
+                    memory=job_memory,
+                    runtime=job_runtime,
+                    block_network=block_network,
+                    outbound_cidr_allowlist=outbound_cidr_allowlist,
+                    inbound_cidr_allowlist=inbound_cidr_allowlist,
+                    proxy=proxy,
+                    name=name,
+                    tags=merged_tags,
+                    experimental_options=exp or None,
+                    client=client or runner.client,
+                )
+            except (
+                modal.exception.AlreadyExistsError,
+                modal.exception.InvalidError,
+                modal.exception.AuthError,
+                modal.exception.PermissionDeniedError,
+                modal.exception.NotFoundError,
+                modal.exception.ResourceExhaustedError,
+            ):
+                try:
+                    spec.delete_registration(
+                        token=github_token, runner_id=registration.runner.id
+                    )
+                except Exception:
+                    logging.getLogger("runner_modal.runner").warning(
+                        "registration cleanup failed repository=%s runner_id=%s",
+                        repository,
+                        registration.runner.id,
+                    )
+                raise
             return cls(sandbox)
 
         @property
@@ -490,7 +514,8 @@ class Runner:
     ) -> Self:
         """Register ASGI webhook Function on ``app`` (definition-time).
 
-        Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts on Jobs only.
+        Call once per App. ``github_secret`` (``GITHUB_TOKEN``) mounts only
+        on the controller.
         ``webhook_secret`` (``WEBHOOK_SECRET``) mounts on the webhook Function only.
         ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
         ``job_image`` overrides the job recipe; ``image`` configures the webhook.
@@ -622,7 +647,7 @@ class Runner:
         app.function(
             name=WEBHOOK_FUNCTION,
             image=control_image,
-            secrets=[webhook_secret],
+            secrets=[github_secret, webhook_secret],
             volumes=vol_map,
             env=run_env,
             region=region,
@@ -752,21 +777,6 @@ class Runner:
         self.meta_dict[META_KEY] = self.meta.model_dump(mode="json")
         self.bind_volume()
         self.hydrated = True
-
-    def github_secret(self) -> modal.Secret:
-        """Named Secret for Job JIT mint (``GITHUB_TOKEN`` only)."""
-        self.hydrate()
-        if not self.meta.github_secret_name:
-            raise LookupError(
-                f"Runner {self.name!r} has no github_secret_name; "
-                "call Runner.create(github_secret=...) first"
-            )
-        return modal.Secret.from_name(
-            self.meta.github_secret_name,
-            required_keys=["GITHUB_TOKEN"],
-            environment_name=self.environment_name,
-            client=self.client,
-        )
 
     def admit_reason(self, labels: Sequence[str], repository: str) -> str | None:
         """``None`` if admitted; otherwise a stable ignore reason string."""

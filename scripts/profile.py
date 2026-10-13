@@ -12,8 +12,8 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import httpx
 import modal
@@ -24,7 +24,6 @@ app = modal.App("runner-modal-profile")
 
 POOL = "profile"
 APP_NAME = "runner-modal-profile"
-SECRET_NAME = "github-runner"
 REPO = "modal-projects/runner-modal"
 
 
@@ -43,7 +42,6 @@ def main(
     with_online: bool = False,
 ) -> None:
     parent = modal.App.lookup(APP_NAME, create_if_missing=True)
-    gh = modal.Secret.from_name(SECRET_NAME, required_keys=["GITHUB_TOKEN"])
 
     with lap("Runner.objects.create(allow_existing)"):
         Runner.objects.create(
@@ -117,13 +115,13 @@ def main(
         runner_reg_name = f"profile-{int(time.time())}"
         job_name = f"prof-job-{int(time.time())}"
 
-        with lap("Job.create (named image + in-job JIT)"):
+        with lap("Job.create (named image + caller JIT)"):
             job = Runner.Job.create(
                 runner,
                 app=parent,
                 repository=repository,
                 labels=labels,
-                github_secret=gh,
+                github_token=os.environ["GITHUB_TOKEN"],
                 name=job_name,
                 runner_name=runner_reg_name,
                 region="us-east",

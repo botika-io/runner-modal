@@ -264,18 +264,21 @@ def test_bind_failure_releases_only_when_terminate_succeeds() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "bind", side_effect=RuntimeError("dict down")),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
     ):
         fake_job.terminate.side_effect = RuntimeError("terminate failed")
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -290,18 +293,21 @@ def test_bind_failure_releases_only_when_terminate_succeeds() -> None:
         release.assert_not_called()
 
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "bind", side_effect=RuntimeError("dict down")),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
     ):
         fake_job.terminate.side_effect = None
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -340,16 +346,14 @@ def test_queued_job_accepted_with_object_id() -> None:
         github_secret_name="github-token",
         webhook_secret_name="github-webhook",
     )
-    gh = MagicMock()
     app = MagicMock()
 
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "bind") as bind,
         patch.object(DeliveryStore, "mark_done") as mark_done,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=gh),
         patch.object(runner, "job_app", return_value=app),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch(
@@ -357,7 +361,11 @@ def test_queued_job_accepted_with_object_id() -> None:
             return_value=fake_job,
         ) as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -373,7 +381,7 @@ def test_queued_job_accepted_with_object_id() -> None:
         assert resp.headers.get("X-Runner-Modal-Outcome") == "accepted"
         bind.assert_called_once_with("deliv-1", "sb-ok")
         mark_done.assert_called_once_with("deliv-1", "sb-ok")
-        assert create.call_args.kwargs["github_secret"] is gh
+        assert create.call_args.kwargs["github_token"] == "registration-token"
         assert create.call_args.kwargs["app"] is app
 
 
@@ -390,7 +398,11 @@ def test_bad_hmac_returns_401() -> None:
         }
     ).encode()
     with patch.object(DeliveryStore, "__init__", lambda self, name: None):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -415,7 +427,11 @@ def test_ignored_event_returns_204_with_reason() -> None:
         }
     ).encode()
     with patch.object(DeliveryStore, "__init__", lambda self, name: None):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -453,12 +469,16 @@ def test_label_mismatch_returns_204_and_does_not_create() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -497,12 +517,16 @@ def test_repo_mismatch_returns_204_and_does_not_create() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -540,12 +564,16 @@ def test_missing_self_hosted_returns_204() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -583,12 +611,16 @@ def test_empty_pool_labels_returns_204() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -627,12 +659,16 @@ def test_completed_terminates_matching_job() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.from_name", return_value=job),
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -670,12 +706,16 @@ def test_completed_skips_repo_mismatch() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.from_name") as from_name,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -714,13 +754,17 @@ def test_duplicate_delivery_returns_existing_object_id() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=done),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create") as create,
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -760,12 +804,16 @@ def test_in_flight_delivery_returns_503() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=pending),
         patch.object(runner, "hydrate"),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -803,11 +851,10 @@ def test_capacity_full_releases_claim_and_returns_503() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch(
@@ -815,7 +862,11 @@ def test_capacity_full_releases_claim_and_returns_503() -> None:
             side_effect=ConcurrencyLimitError("full"),
         ),
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -853,12 +904,11 @@ def test_create_failure_releases_claim() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "mark_done") as mark_done,
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch(
@@ -867,7 +917,9 @@ def test_create_failure_releases_claim() -> None:
         ),
     ):
         resp = TestClient(
-            WebhookApp("acme", webhook_secret=HOOK).fastapi,
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi,
             raise_server_exceptions=False,
         ).post(
             "/github",
@@ -909,18 +961,21 @@ def test_mark_done_failure_after_bind_still_accepts() -> None:
         webhook_secret_name="github-webhook",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(DeliveryStore, "claim", return_value=None),
         patch.object(DeliveryStore, "bind"),
         patch.object(DeliveryStore, "mark_done", side_effect=RuntimeError("dict")),
         patch.object(DeliveryStore, "release") as release,
         patch.object(runner, "hydrate"),
-        patch.object(runner, "github_secret", return_value=MagicMock()),
         patch.object(runner, "job_app", return_value=MagicMock()),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
         patch("runner_modal.webhook.Runner.Job.create", return_value=fake_job),
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).post(
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).post(
             "/github",
             content=body,
             headers={
@@ -952,14 +1007,16 @@ def test_health_reports_labels_and_concurrency() -> None:
         job_image_name="acme-job",
     )
     with (
-        patch.object(DeliveryStore, "__init__", lambda self, name: None),
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=MemoryDict()),
         patch.object(runner, "hydrate"),
         patch.object(runner, "active_count", return_value=2),
         patch("runner_modal.webhook.Runner.from_name", return_value=runner),
     ):
-        resp = TestClient(WebhookApp("acme", webhook_secret=HOOK).fastapi).get(
-            "/health"
-        )
+        resp = TestClient(
+            WebhookApp(
+                "acme", webhook_secret=HOOK, github_token="registration-token"
+            ).fastapi
+        ).get("/health")
         assert resp.status_code == 200
         body = resp.json()
         assert body["runner"] == "acme"
@@ -967,3 +1024,97 @@ def test_health_reports_labels_and_concurrency() -> None:
         assert body["repositories"] == 1
         assert body["active_runners"] == 2
         assert body["max_concurrent"] == 20
+
+
+@pytest.mark.parametrize("phase", ["before", "create", "bind", "after_check"])
+def test_completion_wins_at_every_provisioning_boundary(phase: str) -> None:
+    runner = Runner.from_name("acme", labels=POOL_LABELS, repositories=[REPO])
+    runner.meta = runner.meta.model_copy(update={"app_name": "acme-ci"})
+    memory = MemoryDict()
+    job = MagicMock()
+    job.object_id = "sb-race"
+    created = False
+    completed = False
+    original_bind = DeliveryStore.bind
+    original_check = DeliveryStore.job_completed
+    checks = 0
+
+    with (
+        patch("runner_modal.webhook.modal.Dict.from_name", return_value=memory),
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "job_app", return_value=MagicMock()),
+        patch("runner_modal.webhook.Runner.from_name", return_value=runner),
+    ):
+        app = WebhookApp("acme", webhook_secret=HOOK, github_token="registration-token")
+        client = TestClient(app.fastapi)
+
+        def send(action: str, delivery: str):
+            body = json.dumps(
+                {
+                    "action": action,
+                    "workflow_job": {"id": 42, "labels": POOL_LABELS},
+                    "repository": {"full_name": REPO},
+                }
+            ).encode()
+            return client.post(
+                "/github",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "workflow_job",
+                    "X-GitHub-Delivery": delivery,
+                    "X-Hub-Signature-256": "sha256="
+                    + hmac.new(HOOK.encode(), body, hashlib.sha256).hexdigest(),
+                },
+            )
+
+        def finish() -> None:
+            nonlocal completed
+            assert send("completed", "completion").status_code == 204
+            completed = True
+
+        def find(*args: object, **kwargs: object):
+            if not created:
+                raise LookupError("sandbox not created yet")
+            return job
+
+        def create(*args: object, **kwargs: object):
+            nonlocal created
+            if phase == "create":
+                finish()
+            created = True
+            return job
+
+        def bind(store: DeliveryStore, delivery: str, object_id: str) -> None:
+            if phase == "bind":
+                finish()
+            original_bind(store, delivery, object_id)
+
+        def check(store: DeliveryStore, repo: str, job_id: int) -> bool:
+            nonlocal checks
+            checks += 1
+            result = original_check(store, repo, job_id)
+            if phase == "after_check" and checks == 2:
+                finish()
+            return result
+
+        with (
+            patch.object(Runner.Job, "create", side_effect=create) as create_mock,
+            patch.object(Runner.Job, "from_name", side_effect=find),
+            patch.object(DeliveryStore, "bind", bind),
+            patch.object(DeliveryStore, "job_completed", check),
+        ):
+            if phase == "before":
+                finish()
+            response = send("queued", "queued-delivery")
+            assert completed
+            assert response.status_code == (200 if phase == "after_check" else 204)
+            if phase == "before":
+                create_mock.assert_not_called()
+            else:
+                assert job.terminate.called
+                assert app.deliveries.get("queued-delivery").object_id == "sb-race"
+            assert send("queued", "redelivery").status_code == 204
+            assert create_mock.call_count == (0 if phase == "before" else 1)
+            assert app.deliveries.job_completed(REPO, 42)
+            assert not app.deliveries.job_completed("other/repo", 42)
+            assert not app.deliveries.job_completed(REPO, 43)

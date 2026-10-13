@@ -32,6 +32,7 @@ def webhook() -> FastAPI:
     return WebhookApp(
         os.environ["RUNNER_MODAL_NAME"],
         webhook_secret=os.environ["WEBHOOK_SECRET"],
+        github_token=os.environ["GITHUB_TOKEN"],
     ).fastapi
 
 
@@ -149,6 +150,12 @@ class DeliveryStore:
             create_if_missing=True,
         )
 
+    def complete_job(self, repository: str, job_id: int) -> None:
+        self.store[f"completed:{repository}:{job_id}"] = True
+
+    def job_completed(self, repository: str, job_id: int) -> bool:
+        return self.store.get(f"completed:{repository}:{job_id}") is True
+
     def get(self, delivery_id: str) -> DeliveryRecord | None:
         val = self.store.get(delivery_id)
         if val is None:
@@ -213,9 +220,14 @@ class DeliveryStore:
 class WebhookApp:
     """ASGI control plane for one named Runner."""
 
-    def __init__(self, runner_name: str, *, webhook_secret: str) -> None:
+    def __init__(
+        self, runner_name: str, *, webhook_secret: str, github_token: str
+    ) -> None:
         if not webhook_secret:
             raise AuthError("webhook_secret is required")
+        if not github_token:
+            raise AuthError("github_token is required")
+        self.github_token = github_token
         self.runner_name = runner_name
         self.webhook_secret = webhook_secret
         self.deliveries = DeliveryStore(runner_name)
@@ -308,6 +320,7 @@ class WebhookApp:
             return self.ignore(reason)
 
         if event.action == "completed":
+            self.deliveries.complete_job(event.repo, event.job_id)
             runner.hydrate()
             app_name = runner.meta.app_name
             if app_name:
@@ -328,6 +341,9 @@ class WebhookApp:
                 status_code=status.HTTP_204_NO_CONTENT,
                 headers=self.outcome("completed"),
             )
+
+        if self.deliveries.job_completed(event.repo, event.job_id):
+            return self.ignore("job_completed")
 
         existing = self.deliveries.claim(event.delivery_id)
         if existing is not None:
@@ -355,7 +371,7 @@ class WebhookApp:
                 repository=event.repo,
                 labels=event.labels,
                 name=job_name,
-                github_secret=runner.github_secret(),
+                github_token=self.github_token,
             )
         except LookupError as e:
             self.deliveries.release(event.delivery_id)
@@ -396,6 +412,10 @@ class WebhookApp:
 
         try:
             self.deliveries.bind(event.delivery_id, job.object_id)
+            if self.deliveries.job_completed(event.repo, event.job_id):
+                job.terminate()
+                self.deliveries.mark_done(event.delivery_id, job.object_id)
+                return self.ignore("job_completed")
         except Exception:
             terminated = False
             with contextlib.suppress(Exception):

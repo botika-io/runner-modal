@@ -28,7 +28,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Public primitives take kwargs / `modal.Secret` handles. No ambient `os.environ.get` for credentials or product config on `Runner` / `Job` / `WebhookApp`.
 - Clients and scripts may use env / Modal CLI tokens. Optional `client=` like Modal entities.
 - In-container entrypoints (`webhook()` ASGI entry, `python -m runner_modal.entrypoint`) may read only values **mounted** via `secrets=` / `env=` at create time; KeyError if missing.
-- Split Secrets: `github_secret` (`GITHUB_TOKEN`, Jobs only) and `webhook_secret` (`WEBHOOK_SECRET`, webhook Function only). Never co-mount webhook into Jobs.
+- Split Secrets: `github_secret` (`GITHUB_TOKEN`) and `webhook_secret` (`WEBHOOK_SECRET`) mount on the controller only. Jobs receive only a single-use JIT Secret.
 
 ## Python construction & style
 
@@ -47,8 +47,8 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - Do not wrap Modal / httpx failures in `RunnerError`. Propagate; map only product/auth cases.
 - FastAPI: HTTP status conveys success. Response models without `ok: bool`. Use `HTTPException` for 401 / 400 / 503.
 - Sync I/O (Modal SDK, httpx): use sync `def` endpoints or `asyncio.to_thread`. Never block `async def` handlers with sync Modal/httpx calls.
-- Credentials via required named Secrets on `Runner.create(github_secret=…, webhook_secret=…)` and `Job.create(github_secret=…)`. Never put `GITHUB_TOKEN`, `WEBHOOK_SECRET`, or JIT strings in Sandbox `env=` dicts.
-- JIT mint runs only inside the Job (`python -m runner_modal.entrypoint`) from `GITHUB_TOKEN` injected by `github_secret=`. `WebhookApp` takes an explicit `webhook_secret=`; ASGI entry `webhook()` requires mounted `WEBHOOK_SECRET` / `RUNNER_MODAL_NAME` (KeyError if missing).
+- Credentials via required named Secrets on `Runner.create(github_secret=…, webhook_secret=…)`. `Job.create(github_token=…)` takes the trusted caller’s explicit registration token. Never put `GITHUB_TOKEN`, `WEBHOOK_SECRET`, or JIT strings in Sandbox `env=` dicts.
+- Mint JIT in the trusted controller before creating the Sandbox. Never mount the reusable registration token into Jobs. `WebhookApp` takes explicit `webhook_secret=` and `github_token=`; ASGI entry `webhook()` requires mounted `WEBHOOK_SECRET` / `GITHUB_TOKEN` / `RUNNER_MODAL_NAME`.
 - Verify GitHub webhooks with `hmac.compare_digest` on the raw body before parse. Require `X-GitHub-Delivery` (no job-id fallback).
 
 ## Concurrency & shared state
@@ -78,7 +78,7 @@ Concise always-on rules for this repo. Prefer Modal SDK shapes, idiomatic Python
 - `ok: bool` on HTTP response models
 - Blanket `except Exception: raise RunnerError(...)`
 - Exception taxonomy for every Modal failure mode
-- Tokens or JIT in `env=`; `os.environ.get` credential fallbacks; minting JIT in the parent process; co-mounting `WEBHOOK_SECRET` into Jobs
+- Tokens or JIT in `env=`; `os.environ.get` credential fallbacks; mounting registration tokens into Jobs; co-mounting `WEBHOOK_SECRET` into Jobs
 - Blocking the asyncio event loop with Modal / httpx in `async def`
 - Claim-after-create webhook deliveries; reclaiming pending claims that already have `object_id`
 - Treating soft capacity as a hard reservation

@@ -8,12 +8,19 @@ import pytest
 
 import runner_modal
 from runner_modal import Runner
-from runner_modal.entrypoint import JOB_SPEC_ENV, JobSpec
+from runner_modal.entrypoint import (
+    JIT_CONFIG_ENV,
+    JOB_SPEC_ENV,
+    JitResponse,
+    JobSpec,
+    RegisteredRunner,
+)
 from runner_modal.exceptions import ConcurrencyLimitError
 from runner_modal.meta import JOB_KIND, JOB_MODULE, KIND_TAG, POOL_TAG
 
 POOL = ["self-hosted", "modal"]
 REPO = "a/b"
+JIT = JitResponse(runner=RegisteredRunner(id=123), encoded_jit_config="one-job-jit")
 
 
 def test_public_surface_is_runner_and_errors_only() -> None:
@@ -51,7 +58,7 @@ def test_job_create_raises_when_at_soft_capacity() -> None:
         pytest.raises(ConcurrencyLimitError, match="max_concurrent"),
     ):
         Runner.Job.create(
-            runner, repository=REPO, labels=POOL, github_secret=MagicMock()
+            runner, repository=REPO, labels=POOL, github_token="registration-token"
         )
 
 
@@ -70,7 +77,7 @@ def test_job_create_rejects_when_not_admitted() -> None:
             runner,
             repository="other/repo",
             labels=POOL,
-            github_secret=MagicMock(),
+            github_token="registration-token",
         )
 
 
@@ -97,18 +104,19 @@ def test_url_none_when_undeployed() -> None:
         assert runner.url is None
 
 
-def test_job_create_passes_github_secret_and_job_spec() -> None:
+def test_job_create_mounts_only_single_use_jit_and_job_spec() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-test"
     runner = Runner.from_name(
         "p", create_if_missing=True, labels=POOL, repositories=[REPO]
     )
     runner.meta = runner.meta.model_copy(update={"job_image_name": "p-job"})
-    gh = MagicMock()
 
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT) as mint,
+        patch("runner_modal.runner.modal.Secret.from_dict") as secret,
         patch(
             "runner_modal.runner.modal.Sandbox.create", return_value=fake_sb
         ) as create,
@@ -118,13 +126,17 @@ def test_job_create_passes_github_secret_and_job_spec() -> None:
             runner,
             repository=REPO,
             labels=["job-1"],
-            github_secret=gh,
+            github_token="registration-token",
             cpu=2.0,
         )
         assert job.object_id == "sb-test"
         assert create.call_args.args[:3] == ("python", "-m", JOB_MODULE)
         kwargs = create.call_args.kwargs
-        assert kwargs["secrets"][0] is gh
+        mint.assert_called_once_with(token="registration-token")
+        secret.assert_called_once_with({JIT_CONFIG_ENV: "one-job-jit"})
+        assert kwargs["secrets"] == [secret.return_value]
+        assert "GITHUB_TOKEN" not in kwargs["env"]
+        assert JIT_CONFIG_ENV not in kwargs["env"]
         assert "MODAL_RUNNER_JIT" not in (kwargs.get("env") or {})
         spec = JobSpec.model_validate_json(kwargs["env"][JOB_SPEC_ENV])
         assert spec.repository == REPO
@@ -146,13 +158,14 @@ def test_job_create_uses_meta_resource_defaults_when_omitted() -> None:
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
         patch(
             "runner_modal.runner.modal.Sandbox.create", return_value=fake_sb
         ) as create,
         patch("runner_modal.runner.modal.Image.from_name", return_value=MagicMock()),
     ):
         Runner.Job.create(
-            runner, repository=REPO, labels=["job-1"], github_secret=MagicMock()
+            runner, repository=REPO, labels=["job-1"], github_token="registration-token"
         )
         assert create.call_args.kwargs["gpu"] == "T4"
         assert create.call_args.kwargs["cpu"] == 4.0
@@ -171,6 +184,7 @@ def test_job_create_explicit_gpu_overrides_meta_default() -> None:
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
         patch(
             "runner_modal.runner.modal.Sandbox.create", return_value=fake_sb
         ) as create,
@@ -180,7 +194,7 @@ def test_job_create_explicit_gpu_overrides_meta_default() -> None:
             runner,
             repository=REPO,
             labels=["job-1"],
-            github_secret=MagicMock(),
+            github_token="registration-token",
             gpu="A100",
         )
         assert create.call_args.kwargs["gpu"] == "A100"
@@ -197,17 +211,18 @@ def test_job_create_without_named_image_builds_default() -> None:
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
         patch("runner_modal.runner.modal.Sandbox.create", return_value=fake_sb),
         patch.object(Runner, "default_image", return_value=recipe) as default_image,
     ):
         Runner.Job.create(
-            runner, repository=REPO, labels=["job-1"], github_secret=MagicMock()
+            runner, repository=REPO, labels=["job-1"], github_token="registration-token"
         )
         default_image.assert_called_once()
 
 
 @pytest.mark.parametrize("custom_image", [False, True])
-def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only(
+def test_runner_create_mounts_registration_and_webhook_secrets_in_controller(
     custom_image: bool,
 ) -> None:
     app = MagicMock()
@@ -264,7 +279,7 @@ def test_runner_create_publishes_job_image_and_mounts_webhook_secret_only(
         assert runner_handle.meta.runtime == "vm"
         assert docker.call_count == (0 if custom_image else 1)
         persist.assert_called_once()
-        assert register.call_args.kwargs["secrets"] == [webhook]
+        assert register.call_args.kwargs["secrets"] == [github, webhook]
         assert register.call_args.kwargs["name"] == "webhook"
         assert "gpu" not in register.call_args.kwargs
         assert "cpu" not in register.call_args.kwargs
@@ -333,6 +348,7 @@ def test_job_create_docker_sets_vm_runtime() -> None:
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
         patch(
             "runner_modal.runner.modal.Sandbox.create", return_value=fake_sb
         ) as create,
@@ -342,7 +358,7 @@ def test_job_create_docker_sets_vm_runtime() -> None:
             runner,
             repository=REPO,
             labels=["job-1"],
-            github_secret=MagicMock(),
+            github_token="registration-token",
             runtime="vm",
         )
         assert create.call_args.kwargs["runtime"] == "vm"
@@ -424,15 +440,21 @@ def test_job_inherits_persisted_vm_and_burst_limits(override: str | None) -> Non
     with (
         patch.object(runner, "hydrate"),
         patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
         patch("runner_modal.runner.modal.Sandbox.create") as create,
         patch.object(Runner, "docker_image") as docker,
         patch.object(Runner, "default_image") as default,
     ):
         if override is None:
-            Runner.Job.create(runner, repository=REPO, github_secret=MagicMock())
+            Runner.Job.create(
+                runner, repository=REPO, github_token="registration-token"
+            )
         else:
             Runner.Job.create(
-                runner, repository=REPO, github_secret=MagicMock(), runtime="gvisor"
+                runner,
+                repository=REPO,
+                github_token="registration-token",
+                runtime="gvisor",
             )
         kwargs = create.call_args.kwargs
         assert kwargs["runtime"] == (override or "vm")
@@ -443,3 +465,63 @@ def test_job_inherits_persisted_vm_and_burst_limits(override: str | None) -> Non
         assert spec.use_docker == (override is None)
         assert docker.call_count == (1 if override is None else 0)
         assert default.call_count == (0 if override is None else 1)
+
+
+@pytest.mark.parametrize("failure", ["invalid", "duplicate", "transport"])
+def test_provisioning_failure_registration_cleanup(failure: str) -> None:
+    import modal
+
+    runner = Runner.from_name("p", labels=POOL, repositories=[REPO])
+    failures = {
+        "invalid": modal.exception.InvalidError("invalid"),
+        "duplicate": modal.exception.AlreadyExistsError("duplicate"),
+        "transport": modal.exception.ConnectionError("lost response"),
+    }
+    with (
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "has_capacity", return_value=True),
+        patch.object(Runner, "default_image", return_value=MagicMock()),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
+        patch.object(JobSpec, "delete_registration") as delete,
+        patch(
+            "runner_modal.runner.modal.Sandbox.create", side_effect=failures[failure]
+        ),
+        pytest.raises(type(failures[failure])),
+    ):
+        try:
+            Runner.Job.create(
+                runner,
+                repository=REPO,
+                github_token="registration-token",
+                name="job-42",
+            )
+        finally:
+            if failure == "transport":
+                delete.assert_not_called()
+            else:
+                delete.assert_called_once_with(
+                    token="registration-token", runner_id=123
+                )
+
+
+def test_retry_uses_unique_registration_name_and_same_sandbox_name() -> None:
+    runner = Runner.from_name("p", labels=POOL, repositories=[REPO])
+    with (
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "has_capacity", return_value=True),
+        patch.object(Runner, "default_image", return_value=MagicMock()),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
+        patch("runner_modal.runner.modal.Sandbox.create") as create,
+    ):
+        for _ in range(2):
+            Runner.Job.create(
+                runner,
+                repository=REPO,
+                github_token="registration-token",
+                name="job-42",
+            )
+        first, second = create.call_args_list
+        assert first.kwargs["name"] == second.kwargs["name"] == "job-42"
+        first_spec = JobSpec.model_validate_json(first.kwargs["env"][JOB_SPEC_ENV])
+        second_spec = JobSpec.model_validate_json(second.kwargs["env"][JOB_SPEC_ENV])
+        assert first_spec.runner_name != second_spec.runner_name

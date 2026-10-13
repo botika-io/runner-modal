@@ -112,9 +112,9 @@ GitHub workflow_job
   → webhook (Function + asgi_app)
   → admit (repo + labels)
   → claim delivery ID
-  → Job.create → Sandbox
+  → Job.create → mint single-use JIT in controller → Sandbox
   → python -m runner_modal.entrypoint
-  → mint JIT → ./run.sh --jitconfig …
+  → ./run.sh --jitconfig … (single-use config minted by controller)
 ```
 
 `max_concurrent` is soft (list-then-create). See [SECURITY.md](SECURITY.md).
@@ -126,7 +126,7 @@ job = Runner.Job.create(
     runner,
     repository="YOUR_ORG/YOUR_REPO",
     labels=["self-hosted", "modal", "ci", "job-1"],
-    github_secret=github,
+    github_token=registration_token,  # explicit token in the trusted caller
     gpu="T4",
 )
 job.wait()

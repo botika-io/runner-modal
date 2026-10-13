@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork security fixes
+
+- Mint single-use JIT configs in the controller; never mount the registration token in job Sandboxes. Imperative jobs now take `github_token=` in the trusted caller.
+- Persist job completion before termination and recheck after provisioning to close cancellation races.
+
 ## 0.1.0
 
 ### Breaking

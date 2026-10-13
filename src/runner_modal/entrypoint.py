@@ -1,8 +1,8 @@
-"""Job Sandbox entrypoint — mint JIT from Secret, run Actions runner.
+"""Job Sandbox entrypoint — consume single-use JIT config, run Actions runner.
 
 ``python -m runner_modal.entrypoint``
 
-- ``GITHUB_TOKEN`` — from Modal Secret (required)
+- ``RUNNER_JIT_CONFIG`` — single-use configuration from Modal Secret (required)
 - ``RUNNER_JOB_SPEC`` — JSON ``JobSpec`` (required)
 """
 
@@ -13,7 +13,7 @@ import subprocess
 import time
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from tenacity import (
     retry,
     retry_if_exception,
@@ -25,7 +25,14 @@ from tenacity import (
 from runner_modal.exceptions import AuthError
 
 JOB_SPEC_ENV = "RUNNER_JOB_SPEC"
+JIT_CONFIG_ENV = "RUNNER_JIT_CONFIG"
 ACTIONS_RUNNER = "/actions-runner/run.sh"
+
+
+class RegisteredRunner(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: int
 
 
 class JitResponse(BaseModel):
@@ -33,7 +40,8 @@ class JitResponse(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    encoded_jit_config: str
+    runner: RegisteredRunner
+    encoded_jit_config: str = Field(repr=False)
 
 
 class JobSpec(BaseModel):
@@ -48,11 +56,10 @@ class JobSpec(BaseModel):
     github_enterprise_domain: str | None = None
     use_docker: bool = False
 
-    def start(self, *, token: str) -> None:
+    def start(self, *, jit_config: str) -> None:
         if self.use_docker:
             self.boot_docker()
-        jit = self.mint_jitconfig(token=token)
-        os.execv(ACTIONS_RUNNER, [ACTIONS_RUNNER, "--jitconfig", jit])
+        os.execv(ACTIONS_RUNNER, [ACTIONS_RUNNER, "--jitconfig", jit_config])
 
     def boot_docker(self, *, attempts: int = 120) -> None:
         subprocess.Popen(
@@ -74,7 +81,7 @@ class JobSpec(BaseModel):
             time.sleep(1)
         raise RuntimeError("dockerd did not become ready")
 
-    def mint_jitconfig(self, *, token: str) -> str:
+    def mint_jitconfig(self, *, token: str) -> JitResponse:
         if not token:
             raise AuthError("token is required to mint JIT config")
         if self.repository.count("/") != 1:
@@ -121,7 +128,7 @@ class JobSpec(BaseModel):
     )
     def post_jitconfig(
         self, url: str, payload: dict[str, object], headers: dict[str, str]
-    ) -> str:
+    ) -> JitResponse:
         resp = httpx.post(url, json=payload, headers=headers, timeout=30.0)
         if resp.status_code in (401, 403):
             raise AuthError(f"generate-jitconfig: HTTP {resp.status_code}")
@@ -130,9 +137,28 @@ class JobSpec(BaseModel):
         if resp.status_code >= 400:
             raise ValueError(f"generate-jitconfig: HTTP {resp.status_code}")
         try:
-            return JitResponse.model_validate(resp.json()).encoded_jit_config
+            return JitResponse.model_validate(resp.json())
         except ValidationError as e:
-            raise ValueError("generate-jitconfig: missing encoded_jit_config") from e
+            raise ValueError("generate-jitconfig: invalid response") from e
+
+    def delete_registration(self, *, token: str, runner_id: int) -> None:
+        base = (
+            f"https://{self.github_enterprise_domain}/api/v3"
+            if self.github_enterprise_domain
+            else "https://api.github.com"
+        )
+        response = httpx.delete(
+            f"{base}/repos/{self.repository}/actions/runners/{runner_id}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "runner-modal",
+            },
+            timeout=30.0,
+        )
+        if response.status_code != 404:
+            response.raise_for_status()
 
     @classmethod
     def main(cls) -> None:
@@ -141,12 +167,12 @@ class JobSpec(BaseModel):
         except KeyError as e:
             raise RuntimeError(f"{JOB_SPEC_ENV} is required") from e
         try:
-            token = os.environ["GITHUB_TOKEN"]
+            jit_config = os.environ.pop(JIT_CONFIG_ENV)
         except KeyError as e:
             raise AuthError(
-                "GITHUB_TOKEN is required (modal.Secret on Job.create)"
+                f"{JIT_CONFIG_ENV} is required (single-use Modal Secret on Job.create)"
             ) from e
-        cls.model_validate_json(raw).start(token=token)
+        cls.model_validate_json(raw).start(jit_config=jit_config)
 
 
 if __name__ == "__main__":
