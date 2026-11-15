@@ -32,6 +32,7 @@ from runner_modal.meta import (
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 WEBHOOK_TIMEOUT_SECONDS = 300
+DEFAULT_JOB_TIMEOUT_SECONDS = 60 * 60
 WEBHOOK_MAX_INPUTS = 64
 
 
@@ -229,7 +230,7 @@ class Runner:
                 str | os.PathLike[str], modal.Volume | modal.CloudBucketMount
             ]
             | None = None,
-            timeout: int = 60 * 60,
+            timeout: int | None = None,
             idle_timeout: int | None = None,
             workdir: str | None = None,
             cpu: float | tuple[float, float] | None = None,
@@ -275,6 +276,11 @@ class Runner:
             job_region = region if region is not None else runner.meta.region
             job_idle = (
                 idle_timeout if idle_timeout is not None else runner.meta.idle_timeout
+            )
+            job_timeout = (
+                timeout
+                if timeout is not None
+                else runner.meta.job_timeout or DEFAULT_JOB_TIMEOUT_SECONDS
             )
             exp = dict(runner.meta.experimental_options or {})
             exp.update(experimental_options or {})
@@ -343,7 +349,7 @@ class Runner:
                     env=run_env,
                     secrets=[jit_secret, *(secrets or [])],
                     volumes=vol_map,
-                    timeout=timeout,
+                    timeout=job_timeout,
                     idle_timeout=job_idle,
                     workdir=workdir,
                     gpu=job_gpu,
@@ -512,6 +518,7 @@ class Runner:
         cpu: float | tuple[float, float] | None = None,
         memory: int | tuple[int, int] | None = None,
         runtime: Literal["gvisor", "vm"] | None = None,
+        job_timeout: int | None = None,
     ) -> Self:
         """Register ASGI webhook Function on ``app`` (definition-time).
 
@@ -521,6 +528,7 @@ class Runner:
         ``repositories`` and ``labels`` are required — webhook admission is fail-closed.
         ``job_image`` overrides the job recipe; ``image`` configures the webhook.
         ``cpu`` / ``memory`` / ``gpu`` / ``runtime`` are default Job Sandbox resources.
+        ``job_timeout`` (seconds) is the Job Sandbox timeout; default one hour.
         ``min_containers`` defaults to ``0``; ``buffer_containers`` defaults to ``1``.
         """
         if not RUNNER_NAME_RE.fullmatch(name):
@@ -626,6 +634,7 @@ class Runner:
             memory=memory if memory is not None else prior.memory,
             gpu=gpu if gpu is not None else prior.gpu,
             runtime=job_runtime,
+            job_timeout=job_timeout if job_timeout is not None else prior.job_timeout,
         )
         runner.persist_meta()
 
