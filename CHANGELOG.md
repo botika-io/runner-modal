@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `Runner.create(job_timeout=...)` sets the pool's job Sandbox timeout in seconds (default one hour), for jobs that run longer than an hour. `Runner.Job.create(timeout=...)` still overrides it per job.
+
 ## Fork security fixes
 
 - Mint single-use JIT configs in the controller; never mount the registration token in job Sandboxes. Imperative jobs now take `github_token=` in the trusted caller.

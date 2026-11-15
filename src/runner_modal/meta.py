@@ -60,6 +60,7 @@ class RunnerMeta(BaseModel):
     memory: int | tuple[int, int] | None = None
     gpu: str | None = None
     runtime: Literal["gvisor", "vm"] | None = None
+    job_timeout: int | None = None
 
 
 class RunnerInfo(BaseModel):

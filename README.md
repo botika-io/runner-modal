@@ -93,6 +93,7 @@ CPU and memory accept `(request, limit)` tuples, for example
 `memory=(8192, 16384)` reserves 8 GiB and allows bursting up to 16 GiB.
 Requires Modal SDK 1.6+. Pass `job_image=` to `Runner.create` to publish a custom
 job image; `image=` configures the webhook image.
+`job_timeout=` (seconds, default one hour) caps each job Sandbox's lifetime.
 `cpu` / `memory` / `gpu` are **Job** Sandbox defaults; the webhook Function
 stays small (`buffer_containers=1` by default).
 

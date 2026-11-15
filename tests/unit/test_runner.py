@@ -172,6 +172,43 @@ def test_job_create_uses_meta_resource_defaults_when_omitted() -> None:
         assert create.call_args.kwargs["memory"] == 8192
 
 
+def test_job_create_timeout_defaults_to_one_hour_then_meta_then_explicit() -> None:
+    fake_sb = MagicMock()
+    fake_sb.object_id = "sb-timeout"
+    runner = Runner.from_name(
+        "p", create_if_missing=True, labels=POOL, repositories=[REPO]
+    )
+    runner.meta = runner.meta.model_copy(update={"job_image_name": "p-job"})
+    with (
+        patch.object(runner, "hydrate"),
+        patch.object(runner, "has_capacity", return_value=True),
+        patch.object(JobSpec, "mint_jitconfig", return_value=JIT),
+        patch(
+            "runner_modal.runner.modal.Sandbox.create", return_value=fake_sb
+        ) as create,
+        patch("runner_modal.runner.modal.Image.from_name", return_value=MagicMock()),
+    ):
+        Runner.Job.create(
+            runner, repository=REPO, labels=["job-1"], github_token="registration-token"
+        )
+        assert create.call_args.kwargs["timeout"] == 60 * 60
+
+        runner.meta = runner.meta.model_copy(update={"job_timeout": 4 * 60 * 60})
+        Runner.Job.create(
+            runner, repository=REPO, labels=["job-1"], github_token="registration-token"
+        )
+        assert create.call_args.kwargs["timeout"] == 4 * 60 * 60
+
+        Runner.Job.create(
+            runner,
+            repository=REPO,
+            labels=["job-1"],
+            github_token="registration-token",
+            timeout=600,
+        )
+        assert create.call_args.kwargs["timeout"] == 600
+
+
 def test_job_create_explicit_gpu_overrides_meta_default() -> None:
     fake_sb = MagicMock()
     fake_sb.object_id = "sb-a100"
@@ -263,6 +300,7 @@ def test_runner_create_mounts_registration_and_webhook_secrets_in_controller(
             cpu=(2.0, 4.0),
             memory=(8192, 16384),
             runtime="vm",
+            job_timeout=4 * 60 * 60,
             job_image=recipe if custom_image else None,
         )
         assert out is runner_handle
@@ -277,6 +315,8 @@ def test_runner_create_mounts_registration_and_webhook_secrets_in_controller(
         assert runner_handle.meta.cpu == (2.0, 4.0)
         assert runner_handle.meta.memory == (8192, 16384)
         assert runner_handle.meta.runtime == "vm"
+        assert runner_handle.meta.job_timeout == 4 * 60 * 60
+        assert register.call_args.kwargs["timeout"] == 300
         assert docker.call_count == (0 if custom_image else 1)
         persist.assert_called_once()
         assert register.call_args.kwargs["secrets"] == [github, webhook]
